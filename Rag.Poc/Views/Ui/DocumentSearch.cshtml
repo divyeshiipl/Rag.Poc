@@ -1,0 +1,24 @@
+﻿@using Rag.Poc.ViewModels
+@model DocumentSearchViewModel
+@{
+    ViewData["Title"] = "Document Search";
+}
+
+<div class="card">
+    <h2>Semantic search</h2>
+    <label for="query">Query</label>
+    <input id="query" type="text" placeholder="e.g. safety procedures for welding" />
+    <div class="row mt-1">
+        <button id="searchBtn">Search</button>
+        <span id="status" style="color: var(--muted); font-size:.85rem;"></span>
+    </div>
+</div>
+
+<div class="card" id="resultsCard" style="display:none;">
+    <h2>Results</h2>
+    <div id="results"></div>
+</div>
+
+@section Scripts {
+    <script src="~/js/document-search.js"></script>
+}

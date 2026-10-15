@@ -1,0 +1,26 @@
+﻿@using Rag.Poc.ViewModels
+@model IngestionViewModel
+@{
+    ViewData["Title"] = "Ingestion";
+}
+
+<div class="card">
+    <h2>Process a project</h2>
+    <label for="projectSelect">Project</label>
+    <select id="projectSelect"><option value="">— select —</option></select>
+
+    <div class="row mt-1">
+        <button id="processBtn">Process</button>
+        <button id="rechunkBtn" class="secondary">Rechunk</button>
+        <span id="status" style="color: var(--muted); font-size:.85rem;"></span>
+    </div>
+</div>
+
+<div class="card" id="resultCard" style="display:none;">
+    <h2>Result</h2>
+    <pre id="result" style="white-space:pre-wrap; margin:0;"></pre>
+</div>
+
+@section Scripts {
+    <script src="~/js/ingestion.js"></script>
+}

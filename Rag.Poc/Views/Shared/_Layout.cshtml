@@ -1,0 +1,31 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] – RAG POC</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <div class="app">
+        <aside class="sidebar">
+            <div class="brand">📚 RAG POC</div>
+            <nav>
+                <a asp-controller="Ui" asp-action="Index">🏠 Dashboard</a>
+                <a asp-controller="Ui" asp-action="Rag">💬 Ask Questions</a>
+                <a asp-controller="Ui" asp-action="DocumentSearch">🔎 Document Search</a>
+                <a asp-controller="Ui" asp-action="Ingestion">📥 Ingestion</a>
+                <a asp-controller="Ui" asp-action="Projects">📁 Projects</a>
+            </nav>
+            <div class="footer">Local AI · ONNX · Ollama · pgvector</div>
+        </aside>
+        <main class="content">
+            <header class="topbar">
+                <h1>@ViewData["Title"]</h1>
+            </header>
+            @RenderBody()
+        </main>
+    </div>
+    @RenderSection("Scripts", required: false)
+</body>
+</html>

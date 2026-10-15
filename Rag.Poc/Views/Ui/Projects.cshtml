@@ -1,0 +1,36 @@
+﻿@using Rag.Poc.ViewModels
+@model ProjectsViewModel
+@{
+    ViewData["Title"] = "Projects";
+}
+
+<div class="card">
+    <h2>Create project</h2>
+    <label for="name">Name</label>
+    <input id="name" type="text" />
+    <label for="description" class="mt-1">Description</label>
+    <input id="description" type="text" />
+    <label for="folder" class="mt-1">Document folder (absolute path)</label>
+    <input id="folder" type="text" placeholder="C:\\docs\\myproject" />
+    <div class="row mt-1">
+        <button id="createBtn">Create</button>
+        <button id="refreshBtn" class="secondary">Refresh</button>
+        <span id="status" style="color: var(--muted); font-size:.85rem;"></span>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Existing projects</h2>
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Description</th><th>Folder</th><th>Docs</th><th>Created</th></tr>
+        </thead>
+        <tbody id="projectRows">
+            <tr><td colspan="5">Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+
+@section Scripts {
+    <script src="~/js/projects.js"></script>
+}

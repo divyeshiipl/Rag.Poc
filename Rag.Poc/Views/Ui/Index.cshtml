@@ -1,0 +1,29 @@
+﻿@{
+    ViewData["Title"] = "Dashboard";
+}
+
+<div class="card">
+    <h2>Welcome 👋</h2>
+    <p>This UI talks to your existing RAG API endpoints:</p>
+    <ul>
+        <li><code>GET /api/Rag?question=…</code> — ask natural-language questions</li>
+        <li><code>GET /api/DocumentSearch?query=…</code> — semantic chunk search</li>
+        <li><code>POST /api/Ingestion/projects/{id}</code> — ingest a project</li>
+        <li><code>POST /api/Projects</code> — create a project</li>
+    </ul>
+</div>
+
+<div class="row">
+    <a class="card" style="flex:1; text-decoration:none; color:inherit;" asp-controller="Ui" asp-action="Rag">
+        <h2>💬 Ask Questions</h2>
+        <p>Query your documents with RAG.</p>
+    </a>
+    <a class="card" style="flex:1; text-decoration:none; color:inherit;" asp-controller="Ui" asp-action="DocumentSearch">
+        <h2>🔎 Document Search</h2>
+        <p>Find relevant chunks semantically.</p>
+    </a>
+    <a class="card" style="flex:1; text-decoration:none; color:inherit;" asp-controller="Ui" asp-action="Ingestion">
+        <h2>📥 Ingestion</h2>
+        <p>Process a project's documents.</p>
+    </a>
+</div>

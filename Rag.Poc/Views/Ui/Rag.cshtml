@@ -1,0 +1,30 @@
+﻿@using Rag.Poc.ViewModels
+@model RagViewModel
+@{
+    ViewData["Title"] = "Ask Questions";
+}
+
+<div class="card">
+    <h2>Ask a question</h2>
+    <label for="question">Question</label>
+    <textarea id="question" placeholder="e.g. What is the total revenue for 2024?"></textarea>
+    <div class="row mt-1">
+        <button id="askBtn">Ask</button>
+        <button id="clearBtn" class="secondary">Clear</button>
+        <span id="status" style="color: var(--muted); font-size:.85rem;"></span>
+    </div>
+</div>
+
+<div class="card" id="answerCard" style="display:none;">
+    <h2>Answer</h2>
+    <div class="answer" id="answer"></div>
+    <div class="mt-2">
+        <strong>Sources</strong>
+        <div id="sources"></div>
+    </div>
+    <div class="mt-1" style="color: var(--muted); font-size:.8rem;" id="execTime"></div>
+</div>
+
+@section Scripts {
+    <script src="~/js/rag.js"></script>
+}
