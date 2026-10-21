@@ -22,6 +22,11 @@ builder.Services.AddScoped<DocumentExtractor>();
 builder.Services.AddScoped<DocumentChunker>();
 builder.Services.AddScoped<DocumentSearchService>();
 builder.Services.AddScoped<RagAnswerService>();
+builder.Services.AddHttpClient<IRerankerService, OllamaRerankerService>(c =>
+{
+    c.BaseAddress = new Uri("http://localhost:11434");
+    c.Timeout = TimeSpan.FromMinutes(30);
+});
 
 builder.Services.AddSwaggerGen();
 
@@ -45,7 +50,10 @@ builder.Services.AddSingleton(new BgeSmallOptions
 builder.Services.AddSingleton<IEmbeddingService, BgeSmallEmbeddingService>();
 
 builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(
-    client => client.BaseAddress = new Uri("http://localhost:11434"));
+    client => {
+        client.BaseAddress = new Uri("http://localhost:11434");
+        client.Timeout = TimeSpan.FromMinutes(10);
+    }); 
 
 builder.Services.AddOpenApi();
 

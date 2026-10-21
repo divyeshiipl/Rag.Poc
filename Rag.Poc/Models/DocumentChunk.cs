@@ -23,4 +23,7 @@ public class DocumentChunk
     public Vector? Embedding { get; set; }
 
     public Document? Document { get; set; }
+    public string Namespace { get; set; } = "default";
+
+    public NpgsqlTypes.NpgsqlTsVector? SearchVector { get; set; }
 }

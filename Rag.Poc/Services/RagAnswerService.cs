@@ -1,4 +1,4 @@
-﻿using System.Text;
+﻿using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
 
@@ -21,24 +21,21 @@ public sealed class RagAnswerService
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
-            throw new ArgumentException(
-                "Question cannot be empty.",
-                nameof(question));
+            throw new ArgumentException("Question cannot be empty.", nameof(question));
 
-        var chunks =
-            await _searchService.SearchAsync(
-                question,
-                topK,
-                cancellationToken);
+        var chunks = await _searchService.SearchAsync(question, topK, cancellationToken);
+        return await AnswerFromChunksAsync(question, chunks, cancellationToken);
+    }
 
+    public async Task<string> AnswerFromChunksAsync(
+        string question,
+        IReadOnlyList<DocumentChunk> chunks,
+        CancellationToken cancellationToken = default)
+    {
         if (chunks.Count == 0)
-        {
-            return "I could not find relevant information in the provided documents.";
-        }
+            return "I couldn't find relevant information in our company documents.";
 
         return await _languageModelService.GenerateAnswerAsync(
-            question,
-            chunks,
-            cancellationToken);
+            question, chunks, cancellationToken);
     }
 }

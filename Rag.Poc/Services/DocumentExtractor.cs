@@ -634,33 +634,27 @@ public class DocumentExtractor
                 for (var column = 0; column < values.Count; column++)
                 {
                     var value = values[column];
+                    if (string.IsNullOrWhiteSpace(value)) continue;
 
-                    if (string.IsNullOrWhiteSpace(value))
-                        continue;
-
-                    var header = column < headers.Count
-                        ? headers[column]
-                        : $"Column {column + 1}";
-
+                    var header = column < headers.Count ? headers[column] : $"Column {column + 1}";
                     fields.Add($"{header}: {value}");
                 }
 
-                if (fields.Count == 0)
-                    continue;
+                if (fields.Count == 0) continue;
+
+                var rowLine = $"Row {excelRowNumber}: {string.Join(" | ", fields)}";
+                contentLines.Add(rowLine);
 
                 sections.Add(new DocumentSection
                 {
                     Heading = sheetName,
-                    Content = string.Join(" | ", fields),
-                    SourceLocation =
-                        $"Worksheet: {sheetName}, Row: {excelRowNumber}",
+                    Content = rowLine,
+                    SourceLocation = $"Worksheet: {sheetName}, Row: {excelRowNumber}",
                     ContentType = "ExcelRow",
                     Metadata = new Dictionary<string, string>
                     {
                         ["WorksheetName"] = sheetName,
-                        ["ExcelRowNumber"] =
-                            excelRowNumber.ToString(
-                                CultureInfo.InvariantCulture),
+                        ["ExcelRowNumber"] = excelRowNumber.ToString(CultureInfo.InvariantCulture),
                         ["RecordType"] = "ExcelRow"
                     }
                 });

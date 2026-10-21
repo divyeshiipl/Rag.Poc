@@ -29,105 +29,15 @@ public class DocumentIngestionService
         _embeddingService = embeddingService;
     }
 
-    public async Task<int> RechunkProjectAsync(
-    Guid projectId,
-    CancellationToken cancellationToken = default)
-    {
-        var documents = await _db.Documents
-            .Where(x => x.ProjectId == projectId)
-            .ToListAsync(cancellationToken);
-
-        if (documents.Count == 0)
-        {
-            return 0;
-        }
-
-        var processedDocuments = 0;
-
-        foreach (var document in documents)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
-            {
-                _logger.LogInformation(
-                    "Re-chunking document {FileName}",
-                    document.FileName);
-
-                // Delete existing chunks.
-                await _db.DocumentChunks
-                    .Where(x => x.DocumentId == document.Id)
-                    .ExecuteDeleteAsync(cancellationToken);
-
-                // Extract the document again.
-                var extractedDocument = await _textExtractor.ExtractAsync(
-                    document.FilePath,
-                    cancellationToken);
-
-                if (string.IsNullOrWhiteSpace(
-                        extractedDocument.Text))
-                {
-                    document.Status = "Completed";
-                    document.ProcessedAtUtc =
-                        DateTime.UtcNow;
-
-                    processedDocuments++;
-                    continue;
-                }
-
-                var chunks =
-                    _chunker.Chunk(
-                        document.Id,
-                        extractedDocument);
-
-                foreach (var chunk in chunks)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var embedding =
-                        await _embeddingService
-                            .GenerateDocumentEmbeddingAsync(
-                                chunk.Content,
-                                cancellationToken);
-
-                    chunk.Embedding =
-                        new Pgvector.Vector(embedding);
-                }
-
-                await _db.DocumentChunks.AddRangeAsync(
-                    chunks,
-                    cancellationToken);
-
-                document.Status = "Completed";
-                document.ProcessedAtUtc = DateTime.UtcNow;
-
-                processedDocuments++;
-            }
-            catch (Exception ex)
-            {
-                document.Status = "Failed";
-
-                _logger.LogError(
-                    ex,
-                    "Failed to re-chunk document {DocumentId} - {FileName}",
-                    document.Id,
-                    document.FileName);
-            }
-        }
-
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return processedDocuments;
-    }
-
+    // ============================================================
+    // Process (fresh ingest)
+    // ============================================================
     public async Task<IngestionResult> ProcessProjectAsync(
         Guid projectId,
+        string ns = "default",
         CancellationToken cancellationToken = default)
     {
-        var syncResult =
-            await _syncService.SyncProjectAsync(
-                projectId,
-                cancellationToken);
+        var syncResult = await _syncService.SyncProjectAsync(projectId, cancellationToken);
 
         var result = new IngestionResult
         {
@@ -137,59 +47,129 @@ public class DocumentIngestionService
             DeletedDocuments = syncResult.DeletedDocuments.Count
         };
 
-        var documentsToProcess =
-            syncResult.NewDocuments
-                .Concat(syncResult.ChangedDocuments)
-                .ToList();
+        var documentsToProcess = syncResult.NewDocuments
+            .Concat(syncResult.ChangedDocuments)
+            .ToList();
 
         foreach (var document in documentsToProcess)
         {
             try
             {
-                await ProcessDocumentAsync(
-                    document,
-                    cancellationToken);
-
+                await ProcessDocumentAsync(document, ns, cancellationToken);
                 result.ProcessedDocuments++;
             }
             catch (Exception ex)
             {
                 result.FailedDocuments++;
-
-                _logger.LogError(
-                    ex,
+                _logger.LogError(ex,
                     "Failed to process document {DocumentId} - {FileName}",
-                    document.Id,
-                    document.FileName);
-
+                    document.Id, document.FileName);
                 document.Status = "Failed";
             }
         }
 
         await _db.SaveChangesAsync(cancellationToken);
-
         return result;
+    }
+
+    // ============================================================
+    // Rechunk — always re-embeds into a given namespace
+    // ============================================================
+    public async Task<int> RechunkProjectAsync(
+        Guid projectId,
+        string ns = "default",
+        int chunkSize = 600,
+        int overlap = 100,
+        int minChunkChars = 150,
+        CancellationToken cancellationToken = default)
+    {
+        var documents = await _db.Documents
+            .Where(x => x.ProjectId == projectId)
+            .ToListAsync(cancellationToken);
+
+        if (documents.Count == 0) return 0;
+
+        var processedDocuments = 0;
+
+        foreach (var document in documents)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                _logger.LogInformation("Re-chunking document {FileName} into namespace {Ns}",
+                    document.FileName, ns);
+
+                // Delete existing chunks for this document IN THE TARGET NAMESPACE only.
+                await _db.DocumentChunks
+                    .Where(x => x.DocumentId == document.Id && x.Namespace == ns)
+                    .ExecuteDeleteAsync(cancellationToken);
+
+                var extractedDocument = await _textExtractor.ExtractAsync(
+                    document.FilePath, cancellationToken);
+
+                if (string.IsNullOrWhiteSpace(extractedDocument.Text))
+                {
+                    document.Status = "Completed";
+                    document.ProcessedAtUtc = DateTime.UtcNow;
+                    processedDocuments++;
+                    continue;
+                }
+
+                var isExcel = Path.GetExtension(document.FilePath)
+                    .Equals(".xlsx", StringComparison.OrdinalIgnoreCase)
+                    || Path.GetExtension(document.FilePath)
+                    .Equals(".xls", StringComparison.OrdinalIgnoreCase);
+
+                var chunks = isExcel
+                    ? CreateExcelRowChunks(document.Id, extractedDocument, ns)
+                    : _chunker.Chunk(document.Id, extractedDocument,
+                        chunkSize, overlap, minChunkChars, ns);
+
+                foreach (var chunk in chunks)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var embedding = await _embeddingService
+                        .GenerateDocumentEmbeddingAsync(chunk.Content, cancellationToken);
+
+                    chunk.Embedding = new Pgvector.Vector(embedding);
+                }
+
+                await _db.DocumentChunks.AddRangeAsync(chunks, cancellationToken);
+
+                document.Status = "Completed";
+                document.ProcessedAtUtc = DateTime.UtcNow;
+                processedDocuments++;
+            }
+            catch (Exception ex)
+            {
+                document.Status = "Failed";
+                _logger.LogError(ex,
+                    "Failed to re-chunk document {DocumentId} - {FileName}",
+                    document.Id, document.FileName);
+            }
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return processedDocuments;
     }
 
     private async Task ProcessDocumentAsync(
         Document document,
+        string ns,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation(
-            "Processing document {FileName}",
-            document.FileName);
+        _logger.LogInformation("Processing document {FileName} into namespace {Ns}",
+            document.FileName, ns);
 
-        var extractedDocument =
-            await _textExtractor.ExtractAsync(
-                document.FilePath,
-                cancellationToken);
+        var extractedDocument = await _textExtractor.ExtractAsync(
+            document.FilePath, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(
-            extractedDocument.Text))
+        if (string.IsNullOrWhiteSpace(extractedDocument.Text))
         {
             document.Status = "Completed";
             document.ProcessedAtUtc = DateTime.UtcNow;
-
             return;
         }
 
@@ -199,54 +179,38 @@ public class DocumentIngestionService
             .Equals(".xls", StringComparison.OrdinalIgnoreCase);
 
         var chunks = isExcel
-            ? CreateExcelRowChunks(document.Id, extractedDocument)
-            : _chunker.Chunk(
-                document.Id,
-                extractedDocument,
-                chunkSize: 1000,
-                overlap: 200);
+            ? CreateExcelRowChunks(document.Id, extractedDocument, ns)
+            : _chunker.Chunk(document.Id, extractedDocument, ns: ns);
 
         foreach (var chunk in chunks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var embedding =
-                await _embeddingService
-                    .GenerateDocumentEmbeddingAsync(
-                        chunk.Content,
-                        cancellationToken);
-
-            chunk.Embedding =
-                new Pgvector.Vector(embedding);
+            var embedding = await _embeddingService
+                .GenerateDocumentEmbeddingAsync(chunk.Content, cancellationToken);
+            chunk.Embedding = new Pgvector.Vector(embedding);
         }
 
-        await _db.DocumentChunks.AddRangeAsync(
-            chunks,
-            cancellationToken);
+        await _db.DocumentChunks.AddRangeAsync(chunks, cancellationToken);
 
         document.Status = "Completed";
-        document.ProcessedAtUtc =
-            DateTime.UtcNow;
+        document.ProcessedAtUtc = DateTime.UtcNow;
 
-        _logger.LogInformation(
-            "Processed {FileName}: {ChunkCount} chunks",
-            document.FileName,
-            chunks.Count);
+        _logger.LogInformation("Processed {FileName}: {ChunkCount} chunks",
+            document.FileName, chunks.Count);
     }
 
     private static List<DocumentChunk> CreateExcelRowChunks(
-    Guid documentId,
-    ExtractedDocument extractedDocument)
+        Guid documentId,
+        ExtractedDocument extractedDocument,
+        string ns)
     {
         var chunks = new List<DocumentChunk>();
 
         foreach (var section in extractedDocument.Sections)
         {
-            if (string.IsNullOrWhiteSpace(section.Content))
-                continue;
+            if (string.IsNullOrWhiteSpace(section.Content)) continue;
 
-            var metadata = new Dictionary<string, string>(
-                section.Metadata)
+            var metadata = new Dictionary<string, string>(section.Metadata)
             {
                 ["RecordType"] = "ExcelRow"
             };
@@ -257,16 +221,13 @@ public class DocumentIngestionService
                 DocumentId = documentId,
                 ChunkIndex = chunks.Count,
                 Content = section.Content,
-                TokenCount = Math.Max(
-                    1,
-                    section.Content.Length / 4),
+                TokenCount = Math.Max(1, section.Content.Length / 4),
                 SectionTitle = section.Heading,
                 SourceLocation = section.SourceLocation,
-                MetadataJson =
-                    System.Text.Json.JsonSerializer.Serialize(metadata)
+                Namespace = ns,
+                MetadataJson = System.Text.Json.JsonSerializer.Serialize(metadata)
             });
         }
-
         return chunks;
     }
 }
