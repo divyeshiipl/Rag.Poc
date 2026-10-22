@@ -11,61 +11,138 @@ public class RagController : ControllerBase
 {
     private readonly RagAnswerService _ragAnswerService;
     private readonly DocumentSearchService _searchService;
+    private readonly IRetrievalPlanner _retrievalPlanner;
 
     public RagController(
         RagAnswerService ragAnswerService,
-        DocumentSearchService searchService)
+        DocumentSearchService searchService,
+        IRetrievalPlanner retrievalPlanner)
     {
         _ragAnswerService = ragAnswerService;
         _searchService = searchService;
+        _retrievalPlanner = retrievalPlanner;
     }
 
     [HttpGet]
     public async Task<IActionResult> Ask(
-        [FromQuery] string question,
-        [FromQuery] int topK = 5,
-        [FromQuery] string? ns = null,
-        [FromQuery] double? minSimilarity = null,
-        [FromQuery] string? category = null,
-        [FromQuery] string? policyType = null,
-        [FromQuery] bool hybrid = true,
-        [FromQuery] bool rerank = false,
-        CancellationToken cancellationToken = default)
+       [FromQuery] string question,
+       [FromQuery] int? topK = null,
+       [FromQuery] string? ns = null,
+       CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
+        if (string.IsNullOrWhiteSpace(question))
+            return BadRequest(new { error = "Question cannot be empty." });
 
-        var options = new RetrievalOptions
+        if (topK is <= 0 or > 50)
+            return BadRequest(new { error = "topK must be between 1 and 50." });
+
+        var total = Stopwatch.StartNew();
+
+        RetrievalPlan plan;
+        long planningMs;
+
+        try
         {
-            Query = question,
-            TopK = topK,
-            Namespace = ns,
-            MinSimilarity = minSimilarity,
-            CategoryFilter = string.IsNullOrWhiteSpace(category)
-                ? null
-                : category.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
-            PolicyTypeFilter = policyType,
-            UseHybrid = hybrid,
-            UseReranker = rerank
-        };
+            var planning = Stopwatch.StartNew();
+            plan = await _retrievalPlanner.CreatePlanAsync(question, cancellationToken);
+            planning.Stop();
+            planningMs = planning.ElapsedMilliseconds;
 
-        var chunks = await _searchService.SearchDetailedAsync(options, cancellationToken);
-
-        if (chunks.Count == 0)
+            // Meta / greeting -> answer without retrieval.
+            if (plan.Mode == RetrievalMode.Meta)
+            {
+                total.Stop();
+                return Ok(new
+                {
+                    question,
+                    answer = "Hi! I can answer questions about our company documents — policies, tables, reports, and so on. What would you like to know?",
+                    sources = Array.Empty<object>(),
+                    mode = plan.Mode.ToString(),
+                    planningTimeMs = planningMs,
+                    retrievalTimeMs = 0,
+                    answerGenerationTimeMs = 0,
+                    totalTimeMs = total.ElapsedMilliseconds
+                });
+            }
+        }
+        catch (OperationCanceledException)
         {
-            stopwatch.Stop();
+            return StatusCode(499);
+        }
+
+        // Effective topK: explicit caller wins, else plan, else default.
+        var effectiveTopK = topK ?? plan.TopK ?? 6;
+
+        // Effective namespaces: explicit caller wins, else plan, else default.
+        var effectiveNamespaces = !string.IsNullOrWhiteSpace(ns)
+            ? new List<string> { ns }
+            : plan.Namespaces.Count > 0
+                ? plan.Namespaces.ToList()
+                : new List<string> { "default" };
+
+        var retrieval = Stopwatch.StartNew();
+        var chunks = new List<ScoredChunk>();
+
+        try
+        {
+            foreach (var nsName in effectiveNamespaces)
+            {
+                var hits = await _searchService.SearchAsync(
+                    plan with { Namespaces = new List<string> { nsName } },
+                    effectiveTopK,
+                    nsName,
+                    cancellationToken);
+
+                chunks.AddRange(hits);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499);
+        }
+        retrieval.Stop();
+
+        // Dedupe by (DocumentId, ChunkIndex), keep highest score, apply score floor.
+        var minScore = plan.MinScore ?? 0.15;
+        var deduped = chunks
+            .Where(c => c.Score >= minScore)
+            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex))
+            .Select(g => g.OrderByDescending(c => c.Score).First())
+            .OrderByDescending(c => c.Score)
+            .Take(effectiveTopK)
+            .ToList();
+
+        if (deduped.Count == 0)
+        {
+            total.Stop();
             return Ok(new
             {
                 question,
                 answer = "I couldn't find relevant information in our company documents.",
                 sources = Array.Empty<object>(),
-                executionTimeMinutes = Math.Round(stopwatch.Elapsed.TotalMinutes, 2)
+                mode = plan.Mode.ToString(),
+                retrievalTimeMs = retrieval.ElapsedMilliseconds,
+                totalTimeMs = total.ElapsedMilliseconds
             });
         }
 
-        var answer = await _ragAnswerService.AnswerFromChunksAsync(
-            question, chunks.Select(x => x.Chunk).ToList(), cancellationToken);
+        var generation = Stopwatch.StartNew();
+        string answer;
 
-        var sources = chunks.Select(x => new
+        try
+        {
+            answer = await _ragAnswerService.AnswerFromChunksAsync(
+                question,
+                deduped.Select(x => x.Chunk).ToList(),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499);
+        }
+        generation.Stop();
+
+        var sources = deduped.Select(x => new
         {
             documentId = x.Chunk.DocumentId,
             documentName = x.Chunk.Document?.FileName,
@@ -76,14 +153,20 @@ public class RagController : ControllerBase
             retrievedBy = x.Source
         }).ToList();
 
-        stopwatch.Stop();
+        total.Stop();
 
         return Ok(new
         {
             question,
             answer,
+            mode = plan.Mode.ToString(),
+            searchQuery = plan.SearchQuery,
+            filterText = plan.FilterText,
             sources,
-            executionTimeMinutes = Math.Round(stopwatch.Elapsed.TotalMinutes, 2)
+            planningTimeMs = planningMs,
+            retrievalTimeMs = retrieval.ElapsedMilliseconds,
+            answerGenerationTimeMs = generation.ElapsedMilliseconds,
+            totalTimeMs = total.ElapsedMilliseconds
         });
     }
 

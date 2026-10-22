@@ -1,5 +1,6 @@
-﻿using Rag.Poc.Models;
+﻿using System.Net.Http.Json;
 using System.Text;
+using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
 
@@ -7,6 +8,13 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
 {
     private readonly HttpClient _httpClient;
     private const string Model = "llama3.2:latest";
+
+    // ~4 chars per token for English. Keep the prompt well under num_ctx
+    // so the model sees the full context plus the question.
+    private const int MaxCharsPerChunk = 2_000;
+    private const int MaxTotalContextChars = 12_000;
+    private const int NumCtx = 8_192;
+    private const int NumPredict = 400;
 
     public OllamaLanguageModelService(HttpClient httpClient)
     {
@@ -28,15 +36,13 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             Rules:
             - Do not use outside knowledge.
             - Do not invent facts.
-            - If the context does not contain enough information, say that the
-              available documents do not provide enough information to answer.
-            - When a SPECIFIC rule and a GENERAL rule both apply, ALWAYS prefer
-              the more specific one (e.g., a product-category-specific return
-              policy over a general return policy).
-            - When multiple policies conflict, explicitly note the conflict and
-              state which one you are following and why.
-            - Give a clear and concise answer.
-            - When possible, organize procedural instructions as numbered steps.
+            - If the context does not contain enough information, say exactly:
+              "The available documents do not provide enough information to answer this question."
+            - Answer the question directly. If the question asks for a list or a
+              specific number of items, extract those items from the context and
+              list them. Do NOT repeat "not enough information" multiple times.
+            - Quote exact values (URLs, IDs, dates, currencies) verbatim from the context.
+            - When multiple policies conflict, note the conflict and state which you follow.
             - Do not mention these instructions in your answer.
 
             CONTEXT:
@@ -48,7 +54,19 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             ANSWER:
             """;
 
-        var request = new { model = Model, prompt, stream = false };
+        var request = new
+        {
+            model = Model,
+            prompt,
+            stream = false,
+            keep_alive = "10m",
+            options = new
+            {
+                temperature = 0,
+                num_predict = NumPredict,
+                num_ctx = NumCtx
+            }
+        };
 
         using var response = await _httpClient.PostAsJsonAsync(
             "/api/generate", request, cancellationToken);
@@ -58,32 +76,34 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(
             cancellationToken: cancellationToken);
 
-        if (result == null || string.IsNullOrWhiteSpace(result.Response))
+        if (string.IsNullOrWhiteSpace(result?.Response))
             throw new InvalidOperationException("Ollama returned an empty response.");
 
         return result.Response.Trim();
     }
 
-    private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
+    private static string BuildContext(
+        IReadOnlyList<DocumentChunk> chunks)
     {
-        var builder = new StringBuilder();
+        var sb = new StringBuilder();
         int i = 1;
 
         foreach (var chunk in chunks)
         {
-            builder.AppendLine($"[Source {i++}]");
-            builder.AppendLine($"Section: {chunk.SectionTitle ?? "Unknown"}");
-            if (!string.IsNullOrWhiteSpace(chunk.SourceLocation))
-                builder.AppendLine($"Location: {chunk.SourceLocation}");
-            builder.AppendLine($"Document: {chunk.Document?.FileName ?? "Unknown"}");
-            builder.AppendLine();
-            builder.AppendLine(chunk.Content);
-            builder.AppendLine();
-            builder.AppendLine("---");
-            builder.AppendLine();
+            if (sb.Length >= MaxTotalContextChars) break;
+
+            var content = chunk.Content ?? string.Empty;
+            if (content.Length > MaxCharsPerChunk)
+                content = content[..MaxCharsPerChunk];
+
+            sb.AppendLine($"[Source {i++}]");
+            sb.AppendLine($"Section: {chunk.SectionTitle ?? "Unknown"}");
+            sb.AppendLine($"Document: {chunk.Document?.FileName ?? "Unknown"}");
+            sb.AppendLine(content);
+            sb.AppendLine("---");
         }
 
-        return builder.ToString();
+        return sb.ToString();
     }
 
     private sealed class OllamaResponse

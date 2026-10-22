@@ -17,25 +17,19 @@ public class IngestionController : ControllerBase
     [HttpPost("projects/{projectId:guid}")]
     public async Task<IActionResult> ProcessProject(
         Guid projectId,
-        [FromQuery] string ns = "default",
         CancellationToken cancellationToken = default)
     {
-        var result = await _ingestionService.ProcessProjectAsync(projectId, ns, cancellationToken);
+        var result = await _ingestionService.ProcessProjectAsync(projectId, cancellationToken);
         return Ok(result);
     }
 
     [HttpPost("projects/{projectId:guid}/rechunk")]
     public async Task<IActionResult> RechunkProject(
-        Guid projectId,
-        [FromQuery] string ns = "default",
-        [FromQuery] int chunkSize = 600,
-        [FromQuery] int overlap = 100,
-        [FromQuery] int minChunkChars = 150,
-        CancellationToken cancellationToken = default)
+        Guid projectId)
     {
         var processed = await _ingestionService.RechunkProjectAsync(
-            projectId, ns, chunkSize, overlap, minChunkChars, cancellationToken);
+            projectId);
 
-        return Ok(new { projectId, ns, chunkSize, overlap, minChunkChars, processedDocuments = processed });
+        return Ok(new { projectId, processedDocuments = processed });
     }
 }

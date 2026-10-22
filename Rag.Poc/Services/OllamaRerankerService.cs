@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Text;
+using System.Text.Json;
 using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
@@ -6,11 +7,21 @@ namespace Rag.Poc.Services;
 public sealed class OllamaRerankerService : IRerankerService
 {
     private readonly HttpClient _http;
-    private const string Model = "llama3.2:latest";
+    private readonly ILogger<OllamaRerankerService> _logger;
 
-    public OllamaRerankerService(HttpClient http)
+    // Must be a generative chat model that can follow a JSON-array
+    // instruction. "bge-reranker-v2-m3" will NOT work here — it's a
+    // cross-encoder, not a text generator.
+    private const string RerankModel = "llama3.2:latest";
+
+    private const int MaxPassageChars = 500;
+
+    public OllamaRerankerService(
+        HttpClient http,
+        ILogger<OllamaRerankerService> logger)
     {
         _http = http;
+        _logger = logger;
     }
 
     public async Task<List<ScoredChunk>> RerankAsync(
@@ -19,82 +30,98 @@ public sealed class OllamaRerankerService : IRerankerService
         int topN,
         CancellationToken cancellationToken = default)
     {
-        // Build a compact ranking prompt. This is a "LLM-as-reranker" —
-        // less accurate than a true cross-encoder, but fits your stack.
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("You are a relevance ranker. Given a user question and a list of passages,");
-        sb.AppendLine("return the passage indices ordered from MOST to LEAST relevant.");
-        sb.AppendLine("Respond ONLY with a JSON array of indices, e.g. [3,0,5,1].");
+        if (candidates.Count <= 1)
+            return candidates.Take(topN).ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("You are a relevance scorer. For each passage below, output a relevance score from 0.0 to 1.0.");
+        sb.AppendLine("Output ONLY a JSON array of numbers, one per passage, in order. Example: [0.95, 0.12, 0.67]");
         sb.AppendLine();
         sb.AppendLine($"QUESTION: {query}");
         sb.AppendLine();
         sb.AppendLine("PASSAGES:");
         for (int i = 0; i < candidates.Count; i++)
         {
-            var text = candidates[i].Chunk.Content;
-            if (text.Length > 500) text = text[..500] + "...";
+            var text = candidates[i].Chunk.Content ?? string.Empty;
+            if (text.Length > MaxPassageChars)
+                text = text[..MaxPassageChars] + "...";
             sb.AppendLine($"[{i}] {text}");
             sb.AppendLine();
         }
-        sb.AppendLine("JSON ARRAY:");
+        sb.AppendLine("SCORES JSON ARRAY:");
 
-        var request = new { model = Model, prompt = sb.ToString(), stream = false };
+        var request = new
+        {
+            model = RerankModel,
+            prompt = sb.ToString(),
+            stream = false,
+            keep_alive = "10m",
+            options = new
+            {
+                temperature = 0,
+                num_predict = 128,
+                num_ctx = 4_096
+            }
+        };
 
         try
         {
-            using var resp = await _http.PostAsJsonAsync("/api/generate", request, cancellationToken);
+            using var resp = await _http.PostAsJsonAsync(
+                "/api/generate", request, cancellationToken);
+
             resp.EnsureSuccessStatusCode();
 
-            var doc = await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            var raw = doc.GetProperty("response").GetString() ?? "[]";
+            var doc = await resp.Content.ReadFromJsonAsync<JsonElement>(
+                cancellationToken);
 
-            var order = ParseIndexArray(raw);
-            if (order.Count == 0)
+            var raw = doc.TryGetProperty("response", out var respProp)
+                ? respProp.GetString() ?? "[]"
+                : "[]";
+
+            var scores = ParseScoreArray(raw);
+
+            if (scores.Count != candidates.Count)
+            {
+                _logger.LogWarning(
+                    "Reranker returned {Returned} scores for {Expected} passages; falling back to original order.",
+                    scores.Count, candidates.Count);
                 return candidates.Take(topN).ToList();
+            }
 
-            var reranked = new List<ScoredChunk>();
-            var seen = new HashSet<int>();
-            foreach (var idx in order)
-            {
-                if (idx < 0 || idx >= candidates.Count || !seen.Add(idx)) continue;
-                reranked.Add(new ScoredChunk
+            return candidates
+                .Select((c, i) => new ScoredChunk
                 {
-                    Chunk = candidates[idx].Chunk,
-                    Score = candidates.Count - reranked.Count, // synthetic rank score
+                    Chunk = c.Chunk,
+                    Score = scores[i],
                     Source = "rerank"
-                });
-            }
-
-            // Append any missed candidates at the end
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                if (seen.Contains(i)) continue;
-                reranked.Add(candidates[i]);
-            }
-
-            return reranked.Take(topN).ToList();
+                })
+                .OrderByDescending(x => x.Score)
+                .Take(topN)
+                .ToList();
         }
-        catch
+        catch (Exception ex)
         {
-            // Fail-soft: return original order.
+            _logger.LogWarning(ex,
+                "Reranker call failed; using unranked order.");
             return candidates.Take(topN).ToList();
         }
     }
 
-    private static List<int> ParseIndexArray(string raw)
+    private static List<double> ParseScoreArray(string raw)
     {
         var start = raw.IndexOf('[');
         var end = raw.LastIndexOf(']');
-        if (start < 0 || end <= start) return new List<int>();
+        if (start < 0 || end <= start) return new List<double>();
 
         try
         {
-            return JsonSerializer.Deserialize<List<int>>(raw[start..(end + 1)])
-                   ?? new List<int>();
+            return JsonSerializer.Deserialize<List<double>>(
+                       raw[start..(end + 1)])
+                   ?? new List<double>();
         }
         catch
         {
-            return new List<int>();
+            return new List<double>();
         }
     }
 }

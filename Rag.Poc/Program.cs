@@ -8,7 +8,7 @@ Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContext<RagDbContext>(options =>
+builder.Services.AddDbContextFactory<RagDbContext>(options =>
     options.UseNpgsql(
         builder.Configuration.GetConnectionString("RagDatabase"),
         o => o.UseVector()));
@@ -27,7 +27,10 @@ builder.Services.AddHttpClient<IRerankerService, OllamaRerankerService>(c =>
     c.BaseAddress = new Uri("http://localhost:11434");
     c.Timeout = TimeSpan.FromMinutes(30);
 });
-
+builder.Services.AddHttpClient<IRetrievalPlanner, OllamaRetrievalPlanner>(client =>
+{
+    client.BaseAddress = new Uri("http://localhost:11434");
+});
 builder.Services.AddSwaggerGen();
 
 builder.Services.AddControllersWithViews();

@@ -10,5 +10,5 @@ public sealed class RetrievalOptions
     public string? PolicyTypeFilter { get; init; }
     public bool UseHybrid { get; init; } = true;        // §4
     public bool UseReranker { get; init; } = false;     // §5
-    public int CandidateMultiplier { get; init; } = 4;  // candidates = TopK * mult
+    public int CandidateMultiplier { get; init; } = 2;  // candidates = TopK * mult
 }

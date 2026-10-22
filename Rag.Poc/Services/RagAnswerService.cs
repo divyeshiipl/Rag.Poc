@@ -15,17 +15,17 @@ public sealed class RagAnswerService
         _languageModelService = languageModelService;
     }
 
-    public async Task<string> AnswerAsync(
-        string question,
-        int topK = 5,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(question))
-            throw new ArgumentException("Question cannot be empty.", nameof(question));
+    //public async Task<string> AnswerAsync(
+    //    string question,
+    //    int topK = 5,
+    //    CancellationToken cancellationToken = default)
+    //{
+    //    if (string.IsNullOrWhiteSpace(question))
+    //        throw new ArgumentException("Question cannot be empty.", nameof(question));
 
-        var chunks = await _searchService.SearchAsync(question, topK, cancellationToken);
-        return await AnswerFromChunksAsync(question, chunks, cancellationToken);
-    }
+    //    var chunks = await _searchService.SearchAsync(question, topK, cancellationToken);
+    //    return await AnswerFromChunksAsync(question, chunks, cancellationToken);
+    //}
 
     public async Task<string> AnswerFromChunksAsync(
         string question,

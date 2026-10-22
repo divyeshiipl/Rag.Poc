@@ -634,7 +634,6 @@ public class DocumentExtractor
                 for (var column = 0; column < values.Count; column++)
                 {
                     var value = values[column];
-                    if (string.IsNullOrWhiteSpace(value)) continue;
 
                     var header = column < headers.Count ? headers[column] : $"Column {column + 1}";
                     fields.Add($"{header}: {value}");
@@ -670,16 +669,14 @@ public class DocumentExtractor
             sections.Add(new DocumentSection
             {
                 Heading = sheetName,
-                Content = string.Join(
-                    Environment.NewLine,
-                    contentLines),
+                Content = $"Worksheet: {sheetName}\nColumns: {string.Join(" | ", headers)}",
                 SourceLocation = $"Worksheet: {sheetName}",
                 ContentType = "ExcelWorksheet",
                 Metadata = new Dictionary<string, string>
                 {
                     ["WorksheetName"] = sheetName,
-                    ["HeaderRow"] = headerRow.Number.ToString(
-                        CultureInfo.InvariantCulture)
+                    ["HeaderRow"] = headerRow.Number.ToString(CultureInfo.InvariantCulture),
+                    ["RecordType"] = "ExcelWorksheet"
                 }
             });
         }
