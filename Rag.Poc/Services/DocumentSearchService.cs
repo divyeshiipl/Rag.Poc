@@ -88,7 +88,7 @@ public sealed class DocumentSearchService
             .ToArray();
 
         var terms = allTerms
-            .Where(t => !StopWords.Contains(t) || t.Length <= 2)
+            .Where(t => !StopWords.Contains(t) || t.Length > 2)
             .ToArray();
 
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
@@ -117,7 +117,7 @@ public sealed class DocumentSearchService
                 .Where(predicate)
                 .OrderByDescending(matchCount)
                 .ThenBy(x => x.ChunkIndex)
-                .Take(candidateCount * 2)
+                .Take(candidateCount * 10)
                 .ToListAsync(cancellationToken);
 
             keywordResults = keywordResults
@@ -135,11 +135,72 @@ public sealed class DocumentSearchService
         AddRankedResults(semanticResults, scores, chunks, rrfConstant, false, query, terms);
         AddRankedResults(keywordResults, scores, chunks, rrfConstant, true, query, terms);
 
-        return chunks
+        var rankedChunks = chunks
             .OrderByDescending(x => scores[x.Key])
             .Take(topK)
             .Select(x => x.Value)
             .ToList();
+
+        var finalChunks = await ExpandWithNeighborsAsync(
+            rankedChunks,
+            cancellationToken);
+
+        return finalChunks;
+    }
+
+    /// <summary>
+    /// Expands the ranked chunks with their neighboring chunks.
+    /// </summary>
+    /// <param name="rankedChunks"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private async Task<List<DocumentChunk>> ExpandWithNeighborsAsync(IReadOnlyList<DocumentChunk> rankedChunks, CancellationToken cancellationToken)
+    {
+        if (rankedChunks.Count == 0)
+            return new List<DocumentChunk>();
+
+        var neighborsByDocument = new Dictionary<Guid, Dictionary<int, DocumentChunk>>();
+
+        foreach (var group in rankedChunks.GroupBy(x => x.DocumentId))
+        {
+            var indexes = group
+                .SelectMany(x => new[] { x.ChunkIndex - 1, x.ChunkIndex, x.ChunkIndex + 1 })
+                .Where(x => x >= 0)
+                .Distinct()
+                .ToArray();
+
+            var neighbors = await _db.DocumentChunks
+                .AsNoTracking()
+                .Include(x => x.Document)
+                .Where(x => x.DocumentId == group.Key && indexes.Contains(x.ChunkIndex))
+                .ToListAsync(cancellationToken);
+
+            neighborsByDocument[group.Key] = neighbors
+                .GroupBy(x => x.ChunkIndex)
+                .ToDictionary(x => x.Key, x => x.First());
+        }
+
+        var result = new List<DocumentChunk>();
+        var addedKeys = new HashSet<string>();
+
+        foreach (var chunk in rankedChunks)
+        {
+            if (!neighborsByDocument.TryGetValue(chunk.DocumentId, out var documentChunks))
+                continue;
+
+            foreach (var index in new[] { chunk.ChunkIndex - 1, chunk.ChunkIndex, chunk.ChunkIndex + 1 })
+            {
+                if (index < 0 || !documentChunks.TryGetValue(index, out var neighbor))
+                    continue;
+
+                var key = $"{neighbor.DocumentId}:{neighbor.ChunkIndex}";
+
+                if (addedKeys.Add(key))
+                    result.Add(neighbor);
+            }
+        }
+
+        return result;
     }
 
     #region Private Helper Methods
@@ -262,6 +323,9 @@ public sealed class DocumentSearchService
 
         foreach (var term in terms)
         {
+            if (term.Length <= 2)
+                continue;
+
             if (content.Contains(term, StringComparison.OrdinalIgnoreCase))
                 score += 2;
 
@@ -276,12 +340,6 @@ public sealed class DocumentSearchService
 
             if (relativePath.Contains(term, StringComparison.OrdinalIgnoreCase))
                 score += 2;
-        }
-
-        foreach (var term in terms.Where(t => t.Any(char.IsDigit) && (t.Contains('.') || t.Contains('-') || t.Contains('/'))))
-        {
-            if (fileName.Contains(term, StringComparison.OrdinalIgnoreCase) || relativePath.Contains(term, StringComparison.OrdinalIgnoreCase))
-                score += 100;
         }
 
         return score;

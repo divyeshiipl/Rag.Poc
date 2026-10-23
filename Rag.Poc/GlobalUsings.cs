@@ -10,4 +10,5 @@ global using Rag.Poc.Models;
 global using Rag.Poc.Services;
 global using System.Linq.Expressions;
 global using System.Text;
+global using System.Text.Json.Serialization;
 global using System.Text.RegularExpressions;

@@ -38,8 +38,11 @@ builder.Services.AddSingleton(new BgeSmallOptions
 
 builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 
-builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(
-    client => client.BaseAddress = new Uri("http://localhost:11434"));
+builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(client =>
+{
+    client.BaseAddress = new Uri("http://localhost:11434");
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
 
 builder.Services.AddOpenApi();
 

@@ -37,10 +37,11 @@ public sealed class RagAnswerService
         if (topK <= 0)
             throw new ArgumentOutOfRangeException(nameof(topK));
 
-        var isBroadQuestion = System.Text.RegularExpressions.Regex.IsMatch(
+        var isBroadQuestion = Regex.IsMatch(
             question,
-            @"\b(all|every|complete|entire|list|summarize|summary|steps|phases|relationships|compare|across|features|changes|technology stack)\b",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            @"\b(all|every|complete|entire|list|summarize|summary|steps|phases|relationships|compare|across|features|changes|technology|technologies|stack|backend|frontend|
+                database|databases|layer|layers|roles|targets|requirements|criteria|endpoints|primary keys|business rules|responsibilities|activities|reports|frequencies|statuses|priorities)\b",
+            RegexOptions.IgnoreCase);
 
         var contextCount = isBroadQuestion
             ? Math.Clamp(topK * 2, 10, 20)
