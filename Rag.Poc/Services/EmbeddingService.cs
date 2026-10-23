@@ -1,12 +1,12 @@
-﻿namespace Rag.Poc.Services;
+﻿using Rag.Poc.Constants;
+
+namespace Rag.Poc.Services;
 
 /// <summary>
 /// Provides embedding functionality using the BGE-small model.
 /// </summary>
 public sealed class EmbeddingService : IEmbeddingService, IDisposable
 {
-    private const int EmbeddingDimension = 384;
-    private const string QueryInstruction = "Represent this sentence for searching relevant passages: ";
     private readonly InferenceSession _session;
     private readonly BertTokenizer _tokenizer;
     private readonly BgeSmallOptions _options;
@@ -54,7 +54,7 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
         if (string.IsNullOrWhiteSpace(text))
             throw new ArgumentException("Query cannot be empty.", nameof(text));
 
-        var query = QueryInstruction + text;
+        var query = RagConstants.QueryInstruction + text;
 
         return GenerateEmbeddingAsync(query, cancellationToken);
     }
@@ -136,8 +136,8 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
 
         Normalize(embedding);
 
-        if (embedding.Length != EmbeddingDimension)
-            throw new InvalidOperationException($"Expected {EmbeddingDimension} dimensions " + $"but received {embedding.Length}.");
+        if (embedding.Length != RagConstants.EmbeddingDimension)
+            throw new InvalidOperationException($"Expected {RagConstants.EmbeddingDimension} dimensions " + $"but received {embedding.Length}.");
 
         return Task.FromResult(embedding);
     }

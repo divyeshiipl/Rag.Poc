@@ -2,7 +2,7 @@ Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddDbContext<RagDbContext>(options =>
+builder.Services.AddDbContextFactory<RagDbContext>(options =>
     options.UseNpgsql(
         builder.Configuration.GetConnectionString("RagDatabase"),
         o => o.UseVector()));
@@ -16,7 +16,15 @@ builder.Services.AddScoped<DocumentExtractor>();
 builder.Services.AddScoped<DocumentChunker>();
 builder.Services.AddScoped<DocumentSearchService>();
 builder.Services.AddScoped<RagAnswerService>();
-
+builder.Services.AddHttpClient<IRerankerService, OllamaRerankerService>(c =>
+{
+    c.BaseAddress = new Uri("http://localhost:11434");
+    c.Timeout = TimeSpan.FromMinutes(30);
+});
+builder.Services.AddHttpClient<IRetrievalPlanner, OllamaRetrievalPlanner>(client =>
+{
+    client.BaseAddress = new Uri("http://localhost:11434");
+});
 builder.Services.AddSwaggerGen();
 
 builder.Services.AddControllersWithViews();
@@ -39,7 +47,10 @@ builder.Services.AddSingleton(new BgeSmallOptions
 builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 
 builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(
-    client => client.BaseAddress = new Uri("http://localhost:11434"));
+    client => {
+        client.BaseAddress = new Uri("http://localhost:11434");
+        client.Timeout = TimeSpan.FromMinutes(10);
+    }); 
 
 builder.Services.AddOpenApi();
 

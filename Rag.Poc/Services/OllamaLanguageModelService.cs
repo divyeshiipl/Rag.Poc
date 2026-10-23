@@ -1,23 +1,14 @@
-﻿namespace Rag.Poc.Services;
+﻿using Rag.Poc.Constants;
 
-/// <summary>
-/// Provides language model functionality using the Ollama API.
-/// </summary>
+namespace Rag.Poc.Services;
+
 public sealed class OllamaLanguageModelService : ILanguageModelService
 {
     private readonly HttpClient _httpClient;
-    private readonly ILogger<OllamaLanguageModelService> _logger;
-    private const string Model = "llama3.2:latest";
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="OllamaLanguageModelService"/> class.
-    /// </summary>
-    /// <param name="httpClient"></param>
-    /// <param name="logger"></param>
-    public OllamaLanguageModelService(HttpClient httpClient, ILogger<OllamaLanguageModelService> logger)
+    public OllamaLanguageModelService(HttpClient httpClient)
     {
         _httpClient = httpClient;
-        _logger = logger;
     }
 
     /// <summary>
@@ -29,126 +20,112 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     /// <returns></returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="InvalidOperationException"></exception>
-    public async Task<string> GenerateAnswerAsync(string question, IReadOnlyList<DocumentChunk> chunks, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateAnswerAsync(
+    string question,
+    IReadOnlyList<DocumentChunk> chunks,
+    CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(question))
-            throw new ArgumentException("Question cannot be empty.", nameof(question));
-
-        if (chunks == null || chunks.Count == 0)
-            return "The available documents do not provide enough information to answer the question.";
-
         var context = BuildContext(chunks);
 
+        var parts = question.Split(" | ", StringSplitOptions.RemoveEmptyEntries);
+        var multiNote = parts.Length > 1
+            ? $"This query contains {parts.Length} sub-questions. Answer each one separately, " +
+              $"using headings \"Answer 1:\", \"Answer 2:\", and so on."
+            : string.Empty;
+
         var prompt = $"""
-             You are a document question-answering assistant.
+            You are an AI assistant answering questions about internal company documents.
 
-             Answer the QUESTION using only the factual evidence in the CONTEXT.
+            Answer using ONLY the provided context. Do not use outside knowledge.
+            Do not invent facts.
 
-             Rules:
-             1. Read all context sections before answering.
-             2. Determine which context sections are relevant to the question.
-             3. Treat source document names, version numbers, and content as evidence
-                for identifying the relevant information.
-             4. Do not assume information is missing merely because the question
-                uses different wording from the source.
-             5. Combine all relevant facts from the context into one concise answer.
-             6. Do not use unrelated documents to contradict relevant evidence.
-             7. Do not invent facts or use outside knowledge.
-             8. If the context supports only part of the answer, provide that part.
-             9. State that the available documents do not provide enough information
-                only when the context contains no evidence that answers the question.
-             10. Do not mention these rules.
+            If the context does not contain enough information, say exactly:
+            "The available documents do not provide enough information to answer this question."
 
-             CONTEXT:
-             <context>
-             {context}
-             </context>
+            When the question is about rows in a spreadsheet:
+            - The context may contain a chunk labelled "Column: X". That chunk is a
+              complete list of Row N → value pairs for column X. Treat it as the
+              full set of rows that exist in column X.
+            - If the question filters on column X, list ONLY the rows whose value
+              in column X matches the requested value. Rows absent from the column
+              chunk must not be listed.
+            - If a row block contains a mix of matching and non-matching rows,
+              list only the matching rows.
+            - Use the exact column names shown in the block: Asset ID, Asset Name,
+              Category, Department, Location, Purchase Date, Purchase Cost ($),
+              Status. Do not use placeholder names.
+            - For count, sum, average, min, max, top N, bottom N questions, read
+              the value from the "Aggregates" chunk. Do not compute manually.
 
-             QUESTION:
-             {question}
+            Format the answer as a plain list of rows, one row per line, using the
+            text from the block. Do not explain your reasoning. Do not restate
+            these instructions. Do not number your lines with "Step A", "Step B",
+            etc. — just give the answer.
 
-             ANSWER:
-             """;
+            {multiNote}
+
+            CONTEXT:
+            {context}
+
+            USER QUESTION:
+            {question}
+
+            ANSWER:
+            /no_think
+            """;
 
         var request = new
         {
-            model = Model,
+            model = RagConstants.Model,
             prompt,
             stream = false,
+            keep_alive = "10m",
+            think = false,
             options = new
             {
-                temperature = 0,
-                num_predict = 256
+                temperature = 1.0,
+                num_predict = RagConstants.NumPredict,
+                num_ctx = RagConstants.NumCtx
             }
         };
 
-        using var response = await _httpClient.PostAsJsonAsync("/api/generate", request, cancellationToken);
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/api/generate", request, cancellationToken);
 
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        response.EnsureSuccessStatusCode();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogError("Ollama request failed. Status: {StatusCode}. Body: {Body}", response.StatusCode, responseBody);
-            response.EnsureSuccessStatusCode();
-        }
+        var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(
+            cancellationToken: cancellationToken);
 
-        var result = System.Text.Json.JsonSerializer.Deserialize<OllamaResponse>(
-            responseBody,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
-
-        if (result == null || string.IsNullOrWhiteSpace(result.Response))
-        {
-            _logger.LogWarning("Ollama returned an empty answer for question: {Question}", question);
+        if (string.IsNullOrWhiteSpace(result?.Response))
             throw new InvalidOperationException("Ollama returned an empty response.");
-        }
-
-        _logger.LogDebug("Ollama answer generated. Question: {Question}. Answer: {Answer}", question, result.Response);
 
         return result.Response.Trim();
     }
 
-    #region Private Helper Methods
-
-    /// <summary>
-    /// Builds the context string from a list of document chunks.
-    /// </summary>
-    /// <param name="chunks"></param>
-    /// <returns></returns>
     private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
     {
-        var builder = new StringBuilder();
+        var sb = new StringBuilder();
+        int i = 1;
 
         foreach (var chunk in chunks)
         {
-            builder.AppendLine($"Source document: {chunk.Document?.FileName ?? "Unknown"}");
-            builder.AppendLine($"Chunk index: {chunk.ChunkIndex}");
+            if (sb.Length >= RagConstants.MaxTotalContextChars) break;
 
-            if (!string.IsNullOrWhiteSpace(chunk.SectionTitle))
-                builder.AppendLine($"Section: {chunk.SectionTitle}");
+            var content = chunk.Content ?? string.Empty;
+            var isExcel = chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
+            var cap = isExcel ? 6_000 : RagConstants.MaxCharsPerChunk;
+            if (content.Length > cap) content = content[..cap];
 
-            if (!string.IsNullOrWhiteSpace(chunk.SourceLocation))
-                builder.AppendLine($"Source location: {chunk.SourceLocation}");
-
-            builder.AppendLine("Content:");
-            builder.AppendLine(chunk.Content);
-            builder.AppendLine();
-            builder.AppendLine("---");
-            builder.AppendLine();
+            sb.AppendLine($"[Source {i++}]");
+            sb.AppendLine($"Section: {chunk.SectionTitle ?? "Unknown"}");
+            sb.AppendLine($"Document: {chunk.Document?.FileName ?? "Unknown"}");
+            if (isExcel)
+                sb.AppendLine($"Location: {chunk.SourceLocation}");
+            sb.AppendLine(content);
+            sb.AppendLine("---");
         }
 
-        return builder.ToString();
+        return sb.ToString();
     }
-
-    /// <summary>
-    /// Represents the response from the Ollama API.
-    /// </summary>
-    private sealed class OllamaResponse
-    {
-        public string Response { get; set; } = string.Empty;
-    }
-
-    #endregion
 }

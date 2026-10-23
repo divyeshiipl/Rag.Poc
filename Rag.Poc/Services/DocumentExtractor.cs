@@ -1,9 +1,7 @@
 ﻿using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using ExcelDataReader;
-using Rag.Poc.Models;
 using System.Globalization;
-using System.Text.RegularExpressions;
 
 namespace Rag.Poc.Services;
 
@@ -165,34 +163,12 @@ public class DocumentExtractor
 
         line = line.Trim();
 
-        /*
-         * Supported:
-         *
-         * 1. Document Purpose
-         * 2. Environment Strategy
-         * 10. Database Migration Rules
-         *
-         * 1) Document Purpose
-         * 2) Environment Strategy
-         */
-
         if (!Regex.IsMatch(
             line,
             @"^\d+[\.\)]\s+\S+"))
         {
             return false;
         }
-
-        /*
-         * Do NOT treat numbered sentences/list items
-         * as document sections.
-         *
-         * Examples:
-         *
-         * 1. Developer completes development.
-         * 2. Code review is completed.
-         * 3. Build pipeline is executed.
-         */
 
         if (Regex.IsMatch(
             line,
@@ -600,94 +576,94 @@ public class DocumentExtractor
                 {
                     var value = reader.GetValue(column);
 
-                    values.Add(
-                        value == null || value == DBNull.Value
-                            ? string.Empty
-                            : Convert.ToString(
-                                value,
-                                CultureInfo.InvariantCulture)?.Trim()
-                                ?? string.Empty);
+                    values.Add(FormatCellValue(value));
                 }
 
-                if (values.Any(value => !string.IsNullOrWhiteSpace(value)))
-                {
-                    rows.Add((rowNumber, values));
-                }
+                rows.Add((rowNumber, values));
             }
 
             if (rows.Count == 0)
                 continue;
 
-            // The first non-empty row is treated as the header.
-            var headerRow = rows[0];
-            var headers = BuildHeaders(headerRow.Values);
+            var tables = SplitIntoTables(rows);
 
-            var contentLines = new List<string>();
-
-            for (var i = 1; i < rows.Count; i++)
+            for (var t = 0; t < tables.Count; t++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var tableRows = tables[t];
+                if (tableRows.Count == 0) continue;
 
-                var (excelRowNumber, values) = rows[i];
-                var fields = new List<string>();
+                var tableSheetName = tables.Count > 1
+                    ? $"{sheetName} (Table {t + 1})"
+                    : sheetName;
 
-                for (var column = 0; column < values.Count; column++)
-                {
-                    var value = values[column];
-
-                    if (string.IsNullOrWhiteSpace(value))
-                        continue;
-
-                    var header = column < headers.Count
-                        ? headers[column]
-                        : $"Column {column + 1}";
-
-                    fields.Add($"{header}: {value}");
-                }
-
-                if (fields.Count == 0)
-                    continue;
+                var headerRow = tableRows[0];
+                var headers = BuildHeaders(headerRow.Values);
+                var headerLine = $"Columns: {string.Join(" | ", headers)}";
 
                 sections.Add(new DocumentSection
                 {
-                    Heading = sheetName,
-                    Content = string.Join(" | ", fields),
-                    SourceLocation =
-                        $"Worksheet: {sheetName}, Row: {excelRowNumber}",
-                    ContentType = "ExcelRow",
+                    Heading = $"{tableSheetName} — schema",
+                    Content = $"Worksheet: {tableSheetName}\n{headerLine}",
+                    SourceLocation = $"Worksheet: {tableSheetName}",
+                    ContentType = "ExcelWorksheet",
                     Metadata = new Dictionary<string, string>
                     {
-                        ["WorksheetName"] = sheetName,
-                        ["ExcelRowNumber"] =
-                            excelRowNumber.ToString(
-                                CultureInfo.InvariantCulture),
-                        ["RecordType"] = "ExcelRow"
+                        ["WorksheetName"] = tableSheetName,
+                        ["HeaderRow"] = headerRow.Number.ToString(CultureInfo.InvariantCulture),
+                        ["ColumnCount"] = headers.Count.ToString(CultureInfo.InvariantCulture),
+                        ["RecordType"] = "ExcelWorksheet"
                     }
                 });
-            }
 
-            // Keep a header-only worksheet searchable too.
-            if (contentLines.Count == 0)
-            {
-                contentLines.Add(
-                    "Columns: " + string.Join(" | ", headers));
-            }
+                var dataRows = tableRows.Skip(1).ToList();
+                if (dataRows.Count == 0) continue;
 
-            sections.Add(new DocumentSection
-            {
-                Heading = sheetName,
-                Content = string.Join(
-                    Environment.NewLine,
-                    contentLines),
-                SourceLocation = $"Worksheet: {sheetName}",
-                ContentType = "ExcelWorksheet",
-                Metadata = new Dictionary<string, string>
+                sections.Add(BuildAggregateSection(tableSheetName, headers, dataRows));
+
+                foreach (var colSection in BuildColumnIndexSections(tableSheetName, headers, dataRows))
+                    sections.Add(colSection);
+
+                const int ExtractorRowsPerBlock = 10;
+                for (var blockStart = 0; blockStart < dataRows.Count; blockStart += ExtractorRowsPerBlock)
                 {
-                    ["WorksheetName"] = sheetName,
-                    ["HeaderRow"] = headerRow.Number.ToString(
-                        CultureInfo.InvariantCulture)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var blockRows = dataRows
+                        .Skip(blockStart)
+                        .Take(ExtractorRowsPerBlock)
+                        .ToList();
+
+                    if (blockRows.Count == 0) continue;
+
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine($"Worksheet: {tableSheetName}");
+                    sb.AppendLine(headerLine);
+
+                    foreach (var (excelRowNumber, values) in blockRows)
+                    {
+                        sb.AppendLine(FormatRowLine(excelRowNumber, headers, values));
+                    }
+
+                    var firstRow = blockRows[0].Number;
+                    var lastRow = blockRows[^1].Number;
+
+                    sections.Add(new DocumentSection
+                    {
+                        Heading = $"{tableSheetName} — rows {firstRow}-{lastRow}",
+                        Content = sb.ToString().TrimEnd(),
+                        SourceLocation = $"Worksheet: {tableSheetName}, Rows: {firstRow}-{lastRow}",
+                        ContentType = "ExcelRows",
+                        Metadata = new Dictionary<string, string>
+                        {
+                            ["WorksheetName"] = tableSheetName,
+                            ["FirstRow"] = firstRow.ToString(CultureInfo.InvariantCulture),
+                            ["LastRow"] = lastRow.ToString(CultureInfo.InvariantCulture),
+                            ["RowCount"] = blockRows.Count.ToString(CultureInfo.InvariantCulture),
+                            ["RecordType"] = "ExcelRows"
+                        }
+                    });
                 }
-            });
+            }
         }
         while (reader.NextResult());
 
@@ -720,5 +696,306 @@ public class DocumentExtractor
         }
 
         return headers;
+    }
+
+    private static string FormatCellValue(object? value)
+    {
+        if (value is null || value is DBNull)
+            return string.Empty;
+
+        if (value is DateTime dt)
+            return dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        if (value is double d)
+        {
+            if (Math.Abs(d) < 1e-10) return "0";
+            return d.ToString("0.##########", CultureInfo.InvariantCulture);
+        }
+
+        if (value is float f)
+            return f.ToString("0.##########", CultureInfo.InvariantCulture);
+
+        if (value is decimal m)
+            return m.ToString("0.##########", CultureInfo.InvariantCulture);
+
+        return Convert.ToString(value, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+    }
+
+    private static List<List<(int Number, List<string> Values)>> SplitIntoTables(
+    List<(int Number, List<string> Values)> rows)
+    {
+        var tables = new List<List<(int Number, List<string> Values)>>();
+        var current = new List<(int Number, List<string> Values)>();
+
+        foreach (var row in rows)
+        {
+            var isBlank = row.Values.All(string.IsNullOrWhiteSpace);
+
+            if (isBlank && current.Count > 0)
+            {
+                tables.Add(current);
+                current = new List<(int Number, List<string> Values)>();
+            }
+            else if (!isBlank)
+            {
+                current.Add(row);
+            }
+        }
+
+        if (current.Count > 0)
+            tables.Add(current);
+
+        if (tables.Count == 0 && rows.Count > 0)
+            tables.Add(rows);
+
+        return tables;
+    }
+
+    private static string FormatRowLine(
+    int rowNum,
+    List<string> headers,
+    List<string> values)
+    {
+        var fields = new List<string>();
+
+        for (var c = 0; c < values.Count; c++)
+        {
+            var header = c < headers.Count ? headers[c] : $"Column {c + 1}";
+            var display = string.IsNullOrWhiteSpace(values[c]) ? "(empty)" : values[c];
+            fields.Add($"{header}: {display}");
+        }
+
+        return $"Row {rowNum}: {string.Join(" | ", fields)}";
+    }
+
+    private static DocumentSection BuildAggregateSection(
+        string sheetName,
+        List<string> headers,
+        List<(int Number, List<string> Values)> dataRows)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Worksheet: {sheetName}");
+        sb.AppendLine($"Aggregates: {dataRows.Count} data rows");
+        sb.AppendLine("Columns: " + string.Join(" | ", headers));
+        sb.AppendLine();
+
+        for (var c = 0; c < headers.Count; c++)
+        {
+            var nums = new List<decimal>();
+            var dates = new List<DateTime>();
+            var texts = new List<string>();
+
+            foreach (var (_, values) in dataRows)
+            {
+                if (c >= values.Count) continue;
+                var v = values[c];
+                if (string.IsNullOrWhiteSpace(v)) continue;
+
+                var cleaned = v.Replace(",", "")
+                               .Replace("$", "")
+                               .Replace("€", "")
+                               .Replace("£", "")
+                               .Trim();
+
+                if (decimal.TryParse(cleaned, NumberStyles.Any,
+                        CultureInfo.InvariantCulture, out var d))
+                    nums.Add(d);
+                else if (DateTime.TryParse(v, CultureInfo.InvariantCulture,
+                        DateTimeStyles.None, out var dt))
+                    dates.Add(dt);
+                else
+                    texts.Add(v);
+            }
+
+            sb.Append($"{headers[c]}: Count={nums.Count + dates.Count + texts.Count}");
+
+            if (nums.Count > 0)
+            {
+                sb.Append($", Sum={nums.Sum().ToString("0.####", CultureInfo.InvariantCulture)}");
+                sb.Append($", Avg={(nums.Sum() / nums.Count).ToString("0.####", CultureInfo.InvariantCulture)}");
+                sb.Append($", Min={nums.Min().ToString("0.####", CultureInfo.InvariantCulture)}");
+                sb.Append($", Max={nums.Max().ToString("0.####", CultureInfo.InvariantCulture)}");
+
+                var sorted = dataRows
+                    .Select(r => (
+                        Row: r.Number,
+                        Raw: c < r.Values.Count ? r.Values[c] : "",
+                        Clean: c < r.Values.Count
+                            ? r.Values[c].Replace(",", "").Replace("$", "")
+                                           .Replace("€", "").Replace("£", "").Trim()
+                            : ""))
+                    .Where(r => decimal.TryParse(r.Clean, NumberStyles.Any,
+                        CultureInfo.InvariantCulture, out _))
+                    .Select(r => (r.Row, Value: decimal.Parse(r.Clean,
+                        NumberStyles.Any, CultureInfo.InvariantCulture)))
+                    .ToList();
+
+                sb.AppendLine();
+                sb.Append($"  {headers[c]} > TOP 10 (descending): ");
+                sb.AppendLine(string.Join(", ",
+                    sorted.OrderByDescending(x => x.Value).Take(10)
+                          .Select(x => $"Row {x.Row}={x.Value.ToString("0.####", CultureInfo.InvariantCulture)}")));
+
+                sb.Append($"  {headers[c]} > BOTTOM 10 (ascending): ");
+                sb.AppendLine(string.Join(", ",
+                    sorted.OrderBy(x => x.Value).Take(10)
+                          .Select(x => $"Row {x.Row}={x.Value.ToString("0.####", CultureInfo.InvariantCulture)}")));
+            }
+            else if (dates.Count > 0)
+            {
+                sb.Append($", Min={dates.Min():yyyy-MM-dd}");
+                sb.Append($", Max={dates.Max():yyyy-MM-dd}");
+
+                var dateRows = dataRows
+                    .Select(r => (
+                        Row: r.Number,
+                        Raw: c < r.Values.Count ? r.Values[c] : ""))
+                    .Where(r => DateTime.TryParse(r.Raw, CultureInfo.InvariantCulture,
+                        DateTimeStyles.None, out _))
+                    .Select(r => (r.Row, Date: DateTime.Parse(r.Raw, CultureInfo.InvariantCulture)))
+                    .ToList();
+
+                sb.AppendLine();
+                sb.Append($"  {headers[c]} > MOST RECENT 5: ");
+                sb.AppendLine(string.Join(", ",
+                    dateRows.OrderByDescending(x => x.Date).Take(5)
+                            .Select(x => $"Row {x.Row}={x.Date:yyyy-MM-dd}")));
+
+                sb.Append($"  {headers[c]} > OLDEST 5: ");
+                sb.AppendLine(string.Join(", ",
+                    dateRows.OrderBy(x => x.Date).Take(5)
+                            .Select(x => $"Row {x.Row}={x.Date:yyyy-MM-dd}")));
+            }
+            else if (texts.Count > 0)
+            {
+                var distinct = texts.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                sb.Append($", Distinct={distinct.Count}");
+                if (distinct.Count <= 20)
+                    sb.Append($", Values=[{string.Join(", ", distinct)}]");
+                sb.AppendLine();
+            }
+            else
+            {
+                sb.AppendLine();
+            }
+        }
+
+        sb.AppendLine();
+
+        var categoricalColumns = new List<int>();
+        for (var c = 0; c < headers.Count; c++)
+        {
+            var distinctValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (_, values) in dataRows)
+            {
+                if (c < values.Count && !string.IsNullOrWhiteSpace(values[c]))
+                    distinctValues.Add(values[c].Trim());
+            }
+            if (distinctValues.Count >= 2 && distinctValues.Count <= 20)
+                categoricalColumns.Add(c);
+        }
+
+        foreach (var catCol in categoricalColumns)
+        {
+            sb.AppendLine($"--- Breakdown of numeric columns by [{headers[catCol]}] ---");
+
+            var groups = dataRows
+                .Where(r => catCol < r.Values.Count && !string.IsNullOrWhiteSpace(r.Values[catCol]))
+                .GroupBy(r => r.Values[catCol].Trim(), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key);
+
+            foreach (var group in groups)
+            {
+                sb.AppendLine($"[{headers[catCol]}={group.Key}] Count={group.Count()}");
+
+                for (var c = 0; c < headers.Count; c++)
+                {
+                    if (c == catCol) continue;
+
+                    var nums = new List<decimal>();
+                    foreach (var row in group)
+                    {
+                        if (c >= row.Values.Count) continue;
+                        var v = row.Values[c];
+                        if (string.IsNullOrWhiteSpace(v)) continue;
+                        var cleaned = v.Replace(",", "").Replace("$", "")
+                                       .Replace("€", "").Replace("£", "").Trim();
+                        if (decimal.TryParse(cleaned, NumberStyles.Any,
+                            CultureInfo.InvariantCulture, out var d))
+                            nums.Add(d);
+                    }
+
+                    if (nums.Count > 0)
+                    {
+                        sb.AppendLine($"  {headers[c]}: Count={nums.Count}, " +
+                            $"Sum={nums.Sum().ToString("0.####", CultureInfo.InvariantCulture)}, " +
+                            $"Avg={(nums.Sum() / nums.Count).ToString("0.####", CultureInfo.InvariantCulture)}, " +
+                            $"Min={nums.Min().ToString("0.####", CultureInfo.InvariantCulture)}, " +
+                            $"Max={nums.Max().ToString("0.####", CultureInfo.InvariantCulture)}");
+                    }
+                }
+            }
+
+            sb.AppendLine();
+        }
+
+        return new DocumentSection
+        {
+            Heading = $"{sheetName} — aggregates",
+            Content = sb.ToString().TrimEnd(),
+            SourceLocation = $"Worksheet: {sheetName}, Aggregates",
+            ContentType = "ExcelAggregates",
+            Metadata = new Dictionary<string, string>
+            {
+                ["WorksheetName"] = sheetName,
+                ["RecordType"] = "ExcelAggregates",
+                ["RowCount"] = dataRows.Count.ToString(CultureInfo.InvariantCulture)
+            }
+        };
+    }
+
+    private static IEnumerable<DocumentSection> BuildColumnIndexSections(
+        string sheetName,
+        List<string> headers,
+        List<(int Number, List<string> Values)> dataRows)
+    {
+        for (var c = 0; c < headers.Count; c++)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"Worksheet: {sheetName}");
+            sb.AppendLine($"Column: {headers[c]}");
+
+            var count = 0;
+            foreach (var (rowNum, values) in dataRows)
+            {
+                if (c >= values.Count) continue;
+                var v = values[c];
+                if (string.IsNullOrWhiteSpace(v)) continue;
+
+                sb.AppendLine($"Row {rowNum}: {v}");
+                count++;
+
+                if (count >= 200)
+                {
+                    sb.AppendLine("... (truncated)");
+                    break;
+                }
+            }
+
+            yield return new DocumentSection
+            {
+                Heading = $"{sheetName} — column {headers[c]}",
+                Content = sb.ToString().TrimEnd(),
+                SourceLocation = $"Worksheet: {sheetName}, Column: {headers[c]}",
+                ContentType = "ExcelColumn",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["WorksheetName"] = sheetName,
+                    ["ColumnName"] = headers[c],
+                    ["RecordType"] = "ExcelColumn",
+                    ["ValueCount"] = count.ToString(CultureInfo.InvariantCulture)
+                }
+            };
+        }
     }
 }

@@ -5,31 +5,17 @@ namespace Rag.Poc.Data;
 
 public class RagDbContext : DbContext
 {
-    public RagDbContext(
-        DbContextOptions<RagDbContext> options)
-        : base(options)
-    {
-    }
+    public RagDbContext(DbContextOptions<RagDbContext> options) : base(options) { }
 
     public DbSet<Project> Projects => Set<Project>();
-
     public DbSet<Document> Documents => Set<Document>();
-
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
 
-    protected override void OnModelCreating(
-        ModelBuilder modelBuilder)
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        //modelBuilder.HasPostgresExtension("vector");
-
-        modelBuilder.Entity<Project>()
-            .HasKey(x => x.Id);
-
-        modelBuilder.Entity<Document>()
-            .HasKey(x => x.Id);
-
-        modelBuilder.Entity<DocumentChunk>()
-            .HasKey(x => x.Id);
+        modelBuilder.Entity<Project>().HasKey(x => x.Id);
+        modelBuilder.Entity<Document>().HasKey(x => x.Id);
+        modelBuilder.Entity<DocumentChunk>().HasKey(x => x.Id);
 
         modelBuilder.Entity<Project>()
             .HasMany(x => x.Documents)
@@ -58,5 +44,31 @@ public class RagDbContext : DbContext
         modelBuilder.Entity<DocumentChunk>()
             .Property(x => x.TokenCount)
             .IsRequired();
+
+        // Namespace for A/B index isolation
+        modelBuilder.Entity<DocumentChunk>()
+            .Property(x => x.Namespace)
+            .HasMaxLength(100)
+            .HasDefaultValue("default");
+
+        // Full-text search vector (BM25-ish via Postgres ts_rank)
+        modelBuilder.Entity<DocumentChunk>()
+            .Property(x => x.SearchVector)
+            .HasColumnType("tsvector");
+
+        modelBuilder.Entity<DocumentChunk>()
+            .HasIndex(x => x.Namespace);
+
+        modelBuilder.Entity<DocumentChunk>()
+            .HasIndex(x => x.DocumentId);
+
+        modelBuilder.Entity<DocumentChunk>()
+            .HasIndex(x => x.SearchVector)
+            .HasMethod("GIN");
+
+        modelBuilder.Entity<DocumentChunk>()
+            .HasIndex(x => x.Embedding)
+            .HasMethod("hnsw")
+            .HasOperators("vector_cosine_ops");
     }
 }

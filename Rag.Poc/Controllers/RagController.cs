@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.Services;
+using Rag.Poc.Constants;
+using Rag.Poc.Enums;
 using System.Diagnostics;
 
 namespace Rag.Poc.Controllers;
@@ -10,65 +11,214 @@ public class RagController : ControllerBase
 {
     private readonly RagAnswerService _ragAnswerService;
     private readonly DocumentSearchService _searchService;
+    private readonly IRetrievalPlanner _retrievalPlanner;
 
     public RagController(
         RagAnswerService ragAnswerService,
-        DocumentSearchService searchService)
+        DocumentSearchService searchService,
+        IRetrievalPlanner retrievalPlanner)
     {
         _ragAnswerService = ragAnswerService;
         _searchService = searchService;
+        _retrievalPlanner = retrievalPlanner;
     }
 
     [HttpGet]
     public async Task<IActionResult> Ask(
-        [FromQuery] string question,
-        CancellationToken cancellationToken)
+       [FromQuery] string question,
+       [FromQuery] int? topK = null,
+       [FromQuery] string? ns = null,
+       CancellationToken cancellationToken = default)
     {
-        var stopwatch = Stopwatch.StartNew();
+        if (string.IsNullOrWhiteSpace(question))
+            return BadRequest(new { error = "Question cannot be empty." });
 
-        var chunks =
-            await _searchService.SearchAsync(
-                question,
-                5,
-                cancellationToken);
+        if (topK is <= 0 or > 50)
+            return BadRequest(new { error = "topK must be between 1 and 50." });
 
-        if (chunks.Count == 0)
+        var total = Stopwatch.StartNew();
+
+        RetrievalPlan plan;
+        long planningMs;
+
+        try
         {
-            stopwatch.Stop();
+            var planning = Stopwatch.StartNew();
+            plan = await _retrievalPlanner.CreatePlanAsync(question, cancellationToken);
+            planning.Stop();
+            planningMs = planning.ElapsedMilliseconds;
+
+            if (plan.Mode == RetrievalMode.Meta)
+            {
+                total.Stop();
+                return Ok(new
+                {
+                    question,
+                    answer = "Hi! I can answer questions about our company documents — policies, tables, reports, and so on. What would you like to know?",
+                    sources = Array.Empty<object>(),
+                    mode = plan.Mode.ToString(),
+                    planningTimeMs = planningMs,
+                    retrievalTimeMs = 0,
+                    answerGenerationTimeMs = 0,
+                    totalTimeMs = total.ElapsedMilliseconds
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499);
+        }
+
+        var effectiveTopK = topK ?? plan.TopK ?? 6;
+
+        var effectiveNamespaces = !string.IsNullOrWhiteSpace(ns)
+            ? new List<string> { ns }
+            : plan.Namespaces.Count > 0
+                ? plan.Namespaces.ToList()
+                : new List<string> { "default" };
+
+        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive
+                        && plan.Filters is { Count: > 0 })
+                ? new List<string> { Namespaces.Structural }
+                : effectiveNamespaces;
+
+        var retrieval = Stopwatch.StartNew();
+        var chunks = new List<ScoredChunk>();
+
+        try
+        {
+            foreach (var nsName in namespacesToQuery)
+            {
+                var hits = await _searchService.SearchAsync(
+                    plan with { Namespaces = new List<string> { nsName } },
+                    effectiveTopK,
+                    nsName,
+                    cancellationToken);
+
+                chunks.AddRange(hits);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499);
+        }
+        retrieval.Stop();
+
+        var isFiltered = plan.Mode == RetrievalMode.Exhaustive
+                         && plan.Filters is { Count: > 0 };
+        var isFullTable = plan.Mode == RetrievalMode.FullTable;
+        var isAggregate = plan.Mode == RetrievalMode.Aggregate;
+
+        var minScore = isFiltered || isFullTable || isAggregate
+            ? 0.0
+            : (plan.MinScore ?? 0.15);
+
+        var deduped = chunks
+            .Where(c => c.Score >= minScore)
+            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex, c.Chunk.Namespace))
+            .Select(g => g.OrderByDescending(c => c.Score).First())
+            .OrderByDescending(c => c.Score)
+            .ToList();
+
+        if (!isFiltered && !isFullTable && !isAggregate)
+        {
+            deduped = deduped.Take(effectiveTopK).ToList();
+        }
+
+        if (deduped.Count == 0)
+        {
+            total.Stop();
             return Ok(new
             {
                 question,
-                answer = "I could not find relevant information in the provided documents.",
+                answer = "I couldn't find relevant information in our company documents.",
                 sources = Array.Empty<object>(),
-                executionTimeMinutes = Math.Round(stopwatch.Elapsed.TotalMinutes, 2)
+                mode = plan.Mode.ToString(),
+                retrievalTimeMs = retrieval.ElapsedMilliseconds,
+                totalTimeMs = total.ElapsedMilliseconds
             });
         }
 
-        var answer =
-            await _ragAnswerService.AnswerAsync(
+        var generation = Stopwatch.StartNew();
+        string answer;
+
+        try
+        {
+            answer = await _ragAnswerService.AnswerFromChunksAsync(
                 question,
-                5,
+                deduped.Select(x => x.Chunk).ToList(),
                 cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(499);
+        }
+        generation.Stop();
 
-        var sources = chunks
-            .Select(x => new
-            {
-                documentId = x.DocumentId,
-                documentName = x.Document?.FileName,
-                chunkIndex = x.ChunkIndex,
-                section = x.SectionTitle,
-                sourceLocation = x.SourceLocation,
-            })
-            .ToList();
+        var sources = deduped.Select(x => new
+        {
+            documentId = x.Chunk.DocumentId,
+            documentName = x.Chunk.Document?.FileName,
+            chunkIndex = x.Chunk.ChunkIndex,
+            section = x.Chunk.SectionTitle,
+            sourceLocation = x.Chunk.SourceLocation,
+            score = Math.Round(x.Score, 4),
+            retrievedBy = x.Source
+        }).ToList();
 
-        stopwatch.Stop();
+        total.Stop();
 
         return Ok(new
         {
             question,
             answer,
+            mode = plan.Mode.ToString(),
+            searchQuery = plan.SearchQuery,
+            filterText = plan.FilterText,
             sources,
-            executionTimeMinutes = Math.Round(stopwatch.Elapsed.TotalMinutes, 2)
+            planningTimeMs = planningMs,
+            retrievalTimeMs = retrieval.ElapsedMilliseconds,
+            answerGenerationTimeMs = generation.ElapsedMilliseconds,
+            totalTimeMs = total.ElapsedMilliseconds
+        });
+    }
+
+    [HttpGet("inspect")]
+    public async Task<IActionResult> InspectRetrieval(
+        [FromQuery] string question,
+        [FromQuery] int topK = 10,
+        [FromQuery] string? ns = null,
+        [FromQuery] bool hybrid = true,
+        CancellationToken cancellationToken = default)
+    {
+        var chunks = await _searchService.SearchDetailedAsync(new RetrievalOptions
+        {
+            Query = question,
+            TopK = topK,
+            Namespace = ns,
+            UseHybrid = hybrid
+        }, cancellationToken);
+
+        return Ok(new
+        {
+            question,
+            namespaceUsed = ns ?? "(all)",
+            hybrid,
+            count = chunks.Count,
+            chunks = chunks.Select(c => new
+            {
+                c.Chunk.Id,
+                c.Chunk.DocumentId,
+                documentName = c.Chunk.Document?.FileName,
+                c.Chunk.ChunkIndex,
+                c.Chunk.SectionTitle,
+                c.Chunk.SourceLocation,
+                c.Chunk.TokenCount,
+                c.Chunk.Namespace,
+                score = Math.Round(c.Score, 4),
+                retrievedBy = c.Source,
+                c.Chunk.Content
+            })
         });
     }
 }
