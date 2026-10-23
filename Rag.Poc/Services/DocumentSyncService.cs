@@ -1,7 +1,4 @@
 ﻿using System.Security.Cryptography;
-using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Data;
-using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
 
@@ -54,32 +51,27 @@ public class DocumentSyncService
                 $"Project document folder was not found: {projectFolder}");
         }
 
-        // 2. Load existing documents
         var existingDocuments =
             await _db.Documents
                 .Where(x => x.ProjectId == projectId)
                 .ToListAsync(cancellationToken);
 
-        // 3. Discover physical files
         var discoveredFiles =
             _discoveryService
                 .Discover(projectFolder)
                 .Select(Path.GetFullPath)
                 .ToList();
 
-        // Keep track of physical files so we can detect deleted documents.
         var physicalFilePaths =
             new HashSet<string>(
                 discoveredFiles,
                 StringComparer.OrdinalIgnoreCase);
 
-        // Map existing documents by physical path.
         var existingDocumentsByPath =
             existingDocuments.ToDictionary(
                 x => Path.GetFullPath(x.FilePath),
                 StringComparer.OrdinalIgnoreCase);
 
-        // 4. Process every physical file
         foreach (var filePath in discoveredFiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -114,7 +106,6 @@ public class DocumentSyncService
             }
         }
 
-        // 5. Detect deleted documents
         foreach (var existingDocument in existingDocuments)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -134,7 +125,6 @@ public class DocumentSyncService
             }
         }
 
-        // 6. Save synchronization changes
         await _db.SaveChangesAsync(cancellationToken);
 
         return result;
@@ -152,7 +142,6 @@ public class DocumentSyncService
                 filePath,
                 cancellationToken);
 
-        // Same content = unchanged.
         if (string.Equals(
                 document.FileHash,
                 currentHash,
@@ -167,7 +156,6 @@ public class DocumentSyncService
             return;
         }
 
-        // Content changed.
         await UpdateChangedDocumentAsync(
             document,
             projectFolder,
@@ -238,11 +226,6 @@ public class DocumentSyncService
         CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(filePath);
-
-        // Remove old chunks immediately.
-        //
-        // This prevents stale chunks from being returned
-        // during RAG retrieval after the document changes.
         await _db.DocumentChunks
             .Where(x => x.DocumentId == document.Id)
             .ExecuteDeleteAsync(cancellationToken);

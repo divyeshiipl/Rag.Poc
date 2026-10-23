@@ -1,6 +1,4 @@
 ﻿using System.Text.Json;
-using System.Text.RegularExpressions;
-using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
 
@@ -73,7 +71,7 @@ public class DocumentChunker
 
             var additionalLength = currentBlocks.Count == 0
                 ? block.Length
-                : block.Length + 2; // "\n\n"
+                : block.Length + 2;
 
             if (currentLength + additionalLength > chunkSize)
             {
@@ -114,7 +112,6 @@ public class DocumentChunker
 
     private static List<string> SplitIntoLogicalBlocks(string text)
     {
-        // Preserve newlines inside blocks (§2.6 "keep separators")
         var paragraphs = Regex
             .Split(text.Trim(), @"\n\s*\n")
             .Select(x => x.TrimEnd())
@@ -218,8 +215,6 @@ public class DocumentChunker
         }
         else if (!string.IsNullOrWhiteSpace(content))
         {
-            // Below minimum — keep it anyway if it's the last block, else drop.
-            // Simplest safe behaviour: keep it (dropping loses content).
             chunks.Add(CreateChunk(documentId, section, content, ns, chunkIndex++));
         }
 

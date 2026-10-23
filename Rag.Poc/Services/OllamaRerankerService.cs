@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using Rag.Poc.Constants;
 using Rag.Poc.Models;
 
 namespace Rag.Poc.Services;
@@ -8,13 +9,6 @@ public sealed class OllamaRerankerService : IRerankerService
 {
     private readonly HttpClient _http;
     private readonly ILogger<OllamaRerankerService> _logger;
-
-    // Must be a generative chat model that can follow a JSON-array
-    // instruction. "bge-reranker-v2-m3" will NOT work here — it's a
-    // cross-encoder, not a text generator.
-    private const string RerankModel = "llama3.2:latest";
-
-    private const int MaxPassageChars = 500;
 
     public OllamaRerankerService(
         HttpClient http,
@@ -43,8 +37,8 @@ public sealed class OllamaRerankerService : IRerankerService
         for (int i = 0; i < candidates.Count; i++)
         {
             var text = candidates[i].Chunk.Content ?? string.Empty;
-            if (text.Length > MaxPassageChars)
-                text = text[..MaxPassageChars] + "...";
+            if (text.Length > RagConstants.MaxPassageChars)
+                text = text[..RagConstants.MaxPassageChars] + "...";
             sb.AppendLine($"[{i}] {text}");
             sb.AppendLine();
         }
@@ -52,7 +46,7 @@ public sealed class OllamaRerankerService : IRerankerService
 
         var request = new
         {
-            model = RerankModel,
+            model = RagConstants.RerankModel,
             prompt = sb.ToString(),
             stream = false,
             keep_alive = "10m",

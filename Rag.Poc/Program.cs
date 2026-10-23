@@ -1,9 +1,3 @@
-using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Data;
-using Rag.Poc.Models;
-using Rag.Poc.Services;
-using System.Text;
-
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
@@ -50,7 +44,7 @@ builder.Services.AddSingleton(new BgeSmallOptions
     MaxTokens = 512
 });
 
-builder.Services.AddSingleton<IEmbeddingService, BgeSmallEmbeddingService>();
+builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 
 builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(
     client => {

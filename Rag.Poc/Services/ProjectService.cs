@@ -1,8 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Data;
-using Rag.Poc.Models;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public class ProjectService
 {

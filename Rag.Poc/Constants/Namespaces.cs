@@ -1,4 +1,4 @@
-﻿namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Constants;
 
 public static class Namespaces
 {

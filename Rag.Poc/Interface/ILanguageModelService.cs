@@ -1,6 +1,6 @@
 ﻿using Rag.Poc.Models;
 
-namespace Rag.Poc.Services;
+namespace Rag.Poc.Interface;
 
 public interface ILanguageModelService
 {

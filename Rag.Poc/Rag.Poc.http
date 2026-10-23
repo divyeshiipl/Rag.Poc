@@ -1,6 +1,0 @@
-@Rag.Poc_HostAddress = http://localhost:5048
-
-GET {{Rag.Poc_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###

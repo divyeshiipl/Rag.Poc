@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.Models;
-using Rag.Poc.Services;
+using Rag.Poc.Constants;
+using Rag.Poc.Enums;
 using System.Diagnostics;
 
 namespace Rag.Poc.Controllers;
@@ -48,7 +48,6 @@ public class RagController : ControllerBase
             planning.Stop();
             planningMs = planning.ElapsedMilliseconds;
 
-            // Meta / greeting -> answer without retrieval.
             if (plan.Mode == RetrievalMode.Meta)
             {
                 total.Stop();
@@ -70,22 +69,25 @@ public class RagController : ControllerBase
             return StatusCode(499);
         }
 
-        // Effective topK: explicit caller wins, else plan, else default.
         var effectiveTopK = topK ?? plan.TopK ?? 6;
 
-        // Effective namespaces: explicit caller wins, else plan, else default.
         var effectiveNamespaces = !string.IsNullOrWhiteSpace(ns)
             ? new List<string> { ns }
             : plan.Namespaces.Count > 0
                 ? plan.Namespaces.ToList()
                 : new List<string> { "default" };
 
+        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive
+                        && plan.Filters is { Count: > 0 })
+                ? new List<string> { Namespaces.Structural }
+                : effectiveNamespaces;
+
         var retrieval = Stopwatch.StartNew();
         var chunks = new List<ScoredChunk>();
 
         try
         {
-            foreach (var nsName in effectiveNamespaces)
+            foreach (var nsName in namespacesToQuery)
             {
                 var hits = await _searchService.SearchAsync(
                     plan with { Namespaces = new List<string> { nsName } },
@@ -102,15 +104,26 @@ public class RagController : ControllerBase
         }
         retrieval.Stop();
 
-        // Dedupe by (DocumentId, ChunkIndex), keep highest score, apply score floor.
-        var minScore = plan.MinScore ?? 0.15;
+        var isFiltered = plan.Mode == RetrievalMode.Exhaustive
+                         && plan.Filters is { Count: > 0 };
+        var isFullTable = plan.Mode == RetrievalMode.FullTable;
+        var isAggregate = plan.Mode == RetrievalMode.Aggregate;
+
+        var minScore = isFiltered || isFullTable || isAggregate
+            ? 0.0
+            : (plan.MinScore ?? 0.15);
+
         var deduped = chunks
             .Where(c => c.Score >= minScore)
-            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex))
+            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex, c.Chunk.Namespace))
             .Select(g => g.OrderByDescending(c => c.Score).First())
             .OrderByDescending(c => c.Score)
-            .Take(effectiveTopK)
             .ToList();
+
+        if (!isFiltered && !isFullTable && !isAggregate)
+        {
+            deduped = deduped.Take(effectiveTopK).ToList();
+        }
 
         if (deduped.Count == 0)
         {

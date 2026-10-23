@@ -1,17 +1,15 @@
-﻿using System.Text.Json;
+﻿using Rag.Poc.Constants;
+using Rag.Poc.Enums;
+using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
-using Rag.Poc.Services;
 
 namespace Rag.Poc.Models;
 
-public enum RetrievalMode
-{
-    Semantic,
-    Structural,
-    Exhaustive,
-    Meta
-}
+public sealed record QueryFilter(
+    string Column,
+    string Operator,
+    string Value,
+    string? UpperBound = null);
 
 public sealed record RetrievalPlan(
     string SearchQuery,
@@ -20,25 +18,11 @@ public sealed record RetrievalPlan(
     RetrievalMode Mode,
     string? FilterText = null,
     double? MinScore = null,
-    bool Rewritten = false);
-
-public interface IRetrievalPlanner
-{
-    Task<RetrievalPlan> CreatePlanAsync(
-        string question,
-        CancellationToken cancellationToken = default);
-}
+    bool Rewritten = false,
+    IReadOnlyList<QueryFilter>? Filters = null);
 
 public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 {
-    private const string Model = "qwen2.5:3b-instruct";
-
-    private static readonly string[] AllowedNamespaces = Namespaces.All.ToArray();
-
-    private const int DefaultTopK = 10;
-    private const int MaxTopK = 25;
-    private const int MaxSubQuestions = 8;
-
     private readonly HttpClient _httpClient;
     private readonly ILogger<OllamaRetrievalPlanner> _logger;
 
@@ -111,7 +95,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             .ToList();
 
         if (qmParts.Count >= 2 && qmParts.Any(p => p.Length >= 8))
-            return qmParts.Take(MaxSubQuestions).ToList();
+            return qmParts.Take(RagConstants.MaxSubQuestions).ToList();
 
         var markerPositions = FindListMarkerPositions(input);
         if (markerPositions.Count >= 2)
@@ -128,7 +112,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
                 if (piece.Length > 0) parts.Add(piece);
             }
             if (parts.Count >= 2)
-                return parts.Take(MaxSubQuestions).ToList();
+                return parts.Take(RagConstants.MaxSubQuestions).ToList();
         }
 
         foreach (var connector in new[] { " and ", " or " })
@@ -215,19 +199,20 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         string subQuestion,
         CancellationToken cancellationToken)
     {
-        var prompt = BuildPrompt(subQuestion);
+        var prompt = BuildPrompt(subQuestion) + "\n/no_think";
 
         var request = new
         {
-            model = Model,
+            model = RagConstants.RetriveModel,
             prompt,
             stream = false,
             format = "json",
             keep_alive = "10m",
+            think = false,
             options = new
             {
                 temperature = 0,
-                num_predict = 220,
+                num_predict = 400,
                 top_p = 0.1
             }
         };
@@ -272,8 +257,30 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         if (mode == RetrievalMode.Meta)
             return MetaPlan(original);
 
+        if (mode == RetrievalMode.Aggregate)
+        {
+            var aggQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery)
+                ? original
+                : parsed.SearchQuery.Trim();
+
+            return new RetrievalPlan(
+                SearchQuery: aggQuery,
+                TopK: Math.Clamp(parsed.TopK ?? 8, 3, 20),
+                Namespaces: new List<string>
+                {
+                    Namespaces.Structural,
+                    Namespaces.Default,
+                    Namespaces.Large
+                },
+                Mode: RetrievalMode.Aggregate,
+                FilterText: parsed.FilterText,
+                MinScore: 0,
+                Rewritten: false,
+                Filters: ConvertFilters(parsed.Filters));
+        }
+
         var namespaces = (parsed.Namespaces ?? Array.Empty<string>())
-            .Where(n => !string.IsNullOrWhiteSpace(n) && AllowedNamespaces.Contains(n))
+            .Where(n => !string.IsNullOrWhiteSpace(n) && RagConstants.AllowedNamespaces.Contains(n))
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
@@ -302,18 +309,19 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             ? null
             : parsed.FilterText.Trim();
 
-        if (mode == RetrievalMode.Exhaustive && filterText is null)
+        var hasStructuredFilter = parsed.Filters is { Count: > 0 };
+
+        if (mode == RetrievalMode.Exhaustive && filterText is null && !hasStructuredFilter)
         {
-            _logger.LogWarning("Exhaustive without filterText; downgrading to Semantic.");
+            _logger.LogWarning(
+                "Exhaustive without filterText or structured filter; downgrading to Semantic.");
             mode = RetrievalMode.Semantic;
         }
 
         int? topK = mode == RetrievalMode.Exhaustive
             ? null
-            : Math.Clamp(parsed.TopK is > 0 ? parsed.TopK.Value : DefaultTopK, 3, MaxTopK);
+            : Math.Clamp(parsed.TopK is > 0 ? parsed.TopK.Value : RagConstants.DefaultTopK, 3, RagConstants.MaxTopK);
 
-        // searchQuery may be pipe-joined sub-queries. Keep as-is if the
-        // planner produced a decomposition.
         var searchQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery)
             ? original
             : parsed.SearchQuery.Trim();
@@ -328,7 +336,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             Mode: mode,
             FilterText: filterText,
             MinScore: mode == RetrievalMode.Exhaustive ? 0 : 0.10,
-            Rewritten: !string.Equals(searchQuery, original, StringComparison.Ordinal));
+            Rewritten: !string.Equals(searchQuery, original, StringComparison.Ordinal),
+            Filters: ConvertFilters(parsed.Filters));
     }
 
     private static RetrievalPlan MergeSubPlans(
@@ -357,9 +366,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         var topK = Math.Clamp(
             nonMeta.Where(p => p.TopK.HasValue)
                 .Select(p => p.TopK!.Value)
-                .DefaultIfEmpty(DefaultTopK)
+                .DefaultIfEmpty(RagConstants.DefaultTopK)
                 .Max(),
-            3, MaxTopK);
+            3, RagConstants.MaxTopK);
 
         var filters = nonMeta
             .Select(p => p.FilterText)
@@ -373,6 +382,10 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         var combinedQuery = string.Join(" | ", subQuestions);
 
+        var mergedFilters = nonMeta
+            .SelectMany(p => p.Filters ?? Enumerable.Empty<QueryFilter>())
+            .ToList();
+
         return new RetrievalPlan(
             SearchQuery: combinedQuery,
             TopK: topK,
@@ -380,7 +393,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             Mode: mode,
             FilterText: filterText,
             MinScore: mode == RetrievalMode.Exhaustive ? 0 : 0.10,
-            Rewritten: !string.Equals(combinedQuery, original, StringComparison.Ordinal));
+            Rewritten: !string.Equals(combinedQuery, original, StringComparison.Ordinal),
+            Filters: mergedFilters.Count == 0 ? null : mergedFilters);
     }
 
     private static int ModePriority(RetrievalMode m) => m switch
@@ -409,7 +423,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
     private static RetrievalPlan Fallback(string question) => new(
         SearchQuery: question,
-        TopK: DefaultTopK,
+        TopK: RagConstants.DefaultTopK,
         Namespaces: new List<string> { Namespaces.Default, Namespaces.Large },
         Mode: RetrievalMode.Semantic,
         MinScore: 0.10,
@@ -425,8 +439,16 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
           "searchQuery": string,
           "topK": number | null,
           "namespaces": string[],
-          "mode": "Semantic" | "Structural" | "Exhaustive" | "Meta",
+          "mode": "Semantic" | "Structural" | "Exhaustive" | "Aggregate" | "FullTable" | "Meta",
           "filterText": string | null,
+          "filters": [
+            {
+              "column": string,
+              "operator": "=" | "!=" | ">" | "<" | ">=" | "<=" | "between" | "contains",
+              "value": string,
+              "upperBound": string | null
+            }
+          ] | null,
           "confidence": number
         }
 
@@ -462,6 +484,72 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
                  -> mode = "Semantic", topK = 12,
                     namespaces = ["{{Namespaces.Default}}"].
                  -> searchQuery MUST contain " | " and 2-3 distinct sub-queries.
+
+        Step 3d — AGGREGATION / RANKING / SORTING / COMPARISON:
+                  ("count", "sum", "total", "average", "min", "max",
+                   "how many", "top N", "bottom N", "highest", "lowest",
+                   "oldest", "newest", "most", "least", "compare", "rank")
+                  -> mode = "Aggregate",
+                     topK = 8,
+                     namespaces = ["v2-structural","default","v2-large"].
+                  -> searchQuery describes the column and sheet being aggregated,
+                     e.g. "total quantity in Orders".
+        
+        Step 3e — FILTERS.
+        A question may contain ZERO, ONE, or MANY filter conditions.
+        Each filter is a (column, operator, value) triple, optionally
+        with an upperBound for "between".
+
+        Trigger this step whenever the question asks to restrict rows
+        by any column value. Examples:
+          "belong to the Vehicles category"
+            -> filters = [{"column":"Category","operator":"=","value":"Vehicles"}]
+          "assets in the Finance department"
+            -> filters = [{"column":"Department","operator":"=","value":"Finance"}]
+          "assets under maintenance"
+            -> filters = [{"column":"Status","operator":"=","value":"Under Maintenance"}]
+          "active assets in Finance"
+            -> filters = [
+                  {"column":"Status","operator":"=","value":"Active"},
+                  {"column":"Department","operator":"=","value":"Finance"}
+               ]
+          "IT Hardware assets in Finance that are Active"
+            -> filters = [
+                  {"column":"Category","operator":"=","value":"IT Hardware"},
+                  {"column":"Department","operator":"=","value":"Finance"},
+                  {"column":"Status","operator":"=","value":"Active"}
+               ]
+          "assets purchased between 2020-01-01 and 2021-12-31"
+            -> filters = [
+                  {"column":"Purchase Date","operator":"between",
+                   "value":"2020-01-01","upperBound":"2021-12-31"}
+               ]
+          "maintenance cost greater than 1000"
+            -> filters = [
+                  {"column":"Cost ($)","operator":">","value":"1000"}
+               ]
+          "employees in HR whose status is not Active"
+            -> filters = [
+                  {"column":"Department","operator":"=","value":"HR"},
+                  {"column":"Status","operator":"!=","value":"Active"}
+               ]
+
+        When any filter is present:
+          -> mode = "Exhaustive"
+             topK = null
+             namespaces = ["v2-structural","default","v2-large"]
+             filterText = the FIRST filter's value (still required by
+                          other rules; set it to the first filter's value)
+             filters = the full list of filter conditions
+
+        Rules for filters:
+          - Every filter must have column, operator, value — all three
+            non-empty strings.
+          - Use the column name exactly as it appears in the sheet.
+          - For "between", set value = lower bound, upperBound = upper bound.
+          - For "not", "except", "excluding", use operator "!=".
+          - For "contains", "includes", "matching", use "contains".
+          - If the question has no filter condition, set filters = null.
 
         Step 4 — SHAPE of data (columns, fields, tables, data types,
                  primary key, row count, sheet layout)?
@@ -516,7 +604,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         RULES
           R1. JSON only. No markdown, no prose.
           R2. Exact key names, exact mode/namespace strings.
-          R3. Exhaustive requires non-empty filterText.
+          R3. Exhaustive requires EITHER a non-empty filterText
+            OR a non-empty filters list.
           R4. Meta requires namespaces = [] and topK = null.
           R5. Semantic and Structural require numeric topK.
           R6. Never empty namespaces for non-Meta.
@@ -528,18 +617,25 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         {{subQuestion}}
         """;
 
-    private sealed class OllamaResponse
+    private static List<QueryFilter>? ConvertFilters(List<FilterJson>? raw)
     {
-        public string Response { get; set; } = string.Empty;
-    }
+        if (raw is null) return null;
 
-    private sealed class PlannerJson
-    {
-        public string? SearchQuery { get; set; }
-        public int? TopK { get; set; }
-        public string[]? Namespaces { get; set; }
-        public RetrievalMode? Mode { get; set; }
-        public string? FilterText { get; set; }
-        public double? Confidence { get; set; }
+        var result = new List<QueryFilter>();
+        foreach (var f in raw)
+        {
+            if (string.IsNullOrWhiteSpace(f.Column) ||
+                string.IsNullOrWhiteSpace(f.Operator) ||
+                string.IsNullOrWhiteSpace(f.Value))
+                continue;
+
+            result.Add(new QueryFilter(
+                Column: f.Column.Trim(),
+                Operator: f.Operator.Trim(),
+                Value: f.Value.Trim(),
+                UpperBound: string.IsNullOrWhiteSpace(f.UpperBound) ? null : f.UpperBound.Trim()));
+        }
+
+        return result.Count == 0 ? null : result;
     }
 }

@@ -1,7 +1,4 @@
-﻿using Rag.Poc.Data;
-using Rag.Poc.Models;
-using System.Security.Cryptography;
-using Microsoft.EntityFrameworkCore;
+﻿using System.Security.Cryptography;
 
 namespace Rag.Poc.Services;
 

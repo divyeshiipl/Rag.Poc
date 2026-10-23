@@ -13,8 +13,8 @@ using Rag.Poc.Data;
 namespace Rag.Poc.Migrations
 {
     [DbContext(typeof(RagDbContext))]
-    [Migration("20261014112252_Intial")]
-    partial class Intial
+    [Migration("20261021071048_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
