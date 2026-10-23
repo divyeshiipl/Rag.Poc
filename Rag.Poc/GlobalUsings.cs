@@ -1,0 +1,13 @@
+﻿global using Microsoft.EntityFrameworkCore;
+global using Microsoft.ML.OnnxRuntime;
+global using Microsoft.ML.OnnxRuntime.Tensors;
+global using Microsoft.ML.Tokenizers;
+global using Pgvector;
+global using Pgvector.EntityFrameworkCore;
+global using Rag.Poc.Data;
+global using Rag.Poc.Interface;
+global using Rag.Poc.Models;
+global using Rag.Poc.Services;
+global using System.Linq.Expressions;
+global using System.Text;
+global using System.Text.RegularExpressions;
