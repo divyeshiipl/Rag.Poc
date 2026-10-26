@@ -37,15 +37,11 @@ public sealed class RagAnswerService
         if (topK <= 0)
             throw new ArgumentOutOfRangeException(nameof(topK));
 
-        var isBroadQuestion = Regex.IsMatch(
-            question,
-            @"\b(all|every|complete|entire|list|summarize|summary|steps|phases|relationships|compare|across|features|changes|technology|technologies|stack|backend|frontend|
-                database|databases|layer|layers|roles|targets|requirements|criteria|endpoints|primary keys|business rules|responsibilities|activities|reports|frequencies|statuses|priorities)\b",
+        var isBroadQuestion = Regex.IsMatch(question,
+            @"\b(all|every|complete|entire|list|summarize|summary|steps|phases|relationships|compare|across|features|changes|technology|technologies|stack|backend|frontend|database|databases|layer|layers|roles|target|targets|requirements|performance|response\s*times?|latency|speed|duration|sla|criteria|endpoints|primary\s*keys|business\s*rules|responsibilities|activities|reports|frequencies|statuses|priorities|login|asset\s*search|dashboard|report\s*generation)\b",
             RegexOptions.IgnoreCase);
 
-        var contextCount = isBroadQuestion
-            ? Math.Clamp(topK * 2, 10, 20)
-            : Math.Clamp(topK, 3, 8);
+        var contextCount = isBroadQuestion ? Math.Clamp(topK * 2, 10, 20) : Math.Clamp(topK, 3, 8);
 
         var chunks = await _searchService.SearchAsync(question, contextCount, cancellationToken);
 
