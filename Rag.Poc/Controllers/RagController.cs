@@ -1,9 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.Constants;
-using Rag.Poc.Enums;
-using System.Diagnostics;
-
-namespace Rag.Poc.Controllers;
+﻿namespace Rag.Poc.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -23,6 +18,14 @@ public class RagController : ControllerBase
         _retrievalPlanner = retrievalPlanner;
     }
 
+    /// <summary>
+    /// To ask a question
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="topK"></param>
+    /// <param name="ns"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     [HttpGet]
     public async Task<IActionResult> Ask(
        [FromQuery] string question,
@@ -144,10 +147,31 @@ public class RagController : ControllerBase
 
         try
         {
-            answer = await _ragAnswerService.AnswerFromChunksAsync(
-                question,
-                deduped.Select(x => x.Chunk).ToList(),
-                cancellationToken);
+            var chunksForLlm = deduped
+                .Where(x => x.Source != "filtered-column")
+                .Select(x => x.Chunk)
+                .ToList();
+
+            var isFilteredQuery = plan.Mode == RetrievalMode.Exhaustive
+                                  && plan.Filters is { Count: > 0 };
+
+            if (isFilteredQuery && chunksForLlm.Count == 1
+                && chunksForLlm[0].Content?.Contains("VERIFIED MATCHING ROWS") == true)
+            {
+                answer = await GenerateBatchedFilteredAnswerAsync(
+                    question,
+                    chunksForLlm[0],
+                    plan.Filters,
+                    cancellationToken);
+            }
+            else
+            {
+                answer = await _ragAnswerService.AnswerFromChunksAsync(
+                    question,
+                    chunksForLlm,
+                    plan.Filters,
+                    cancellationToken);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -183,6 +207,15 @@ public class RagController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// To get the retrived chunks/documents of a asked question
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="topK"></param>
+    /// <param name="ns"></param>
+    /// <param name="hybrid"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     [HttpGet("inspect")]
     public async Task<IActionResult> InspectRetrieval(
         [FromQuery] string question,
@@ -221,4 +254,126 @@ public class RagController : ControllerBase
             })
         });
     }
+
+    #region Private Methods
+
+    private async Task<string> GenerateBatchedFilteredAnswerAsync(
+    string question,
+    DocumentChunk filteredChunk,
+    IReadOnlyList<QueryFilter>? filters,
+    CancellationToken cancellationToken)
+    {
+        const int MaxRowsPerBatch = 8;
+
+        var lines = (filteredChunk.Content ?? "").Split('\n');
+        var headerLines = new List<string>();
+        var rowLines = new List<string>();
+
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
+                rowLines.Add(line.TrimEnd());
+            else if (!string.IsNullOrWhiteSpace(line))
+                headerLines.Add(line.TrimEnd());
+        }
+
+        if (rowLines.Count == 0)
+            return "No matching rows were found.";
+
+        if (rowLines.Count <= MaxRowsPerBatch)
+        {
+            return await _ragAnswerService.AnswerFromChunksAsync(
+                question, new[] { filteredChunk }, filters, cancellationToken);
+        }
+
+        var batches = new List<List<string>>();
+        for (var i = 0; i < rowLines.Count; i += MaxRowsPerBatch)
+            batches.Add(rowLines.Skip(i).Take(MaxRowsPerBatch).ToList());
+
+        var allRows = new List<string>();
+
+        foreach (var batch in batches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batchContent = new StringBuilder();
+            foreach (var h in headerLines) batchContent.AppendLine(h);
+            batchContent.AppendLine();
+            foreach (var row in batch) batchContent.AppendLine(row);
+
+            var batchChunk = new DocumentChunk
+            {
+                Id = filteredChunk.Id,
+                DocumentId = filteredChunk.DocumentId,
+                ChunkIndex = filteredChunk.ChunkIndex,
+                Content = batchContent.ToString(),
+                TokenCount = batchContent.Length / 4,
+                SectionTitle = filteredChunk.SectionTitle,
+                SourceLocation = filteredChunk.SourceLocation,
+                Namespace = filteredChunk.Namespace,
+                MetadataJson = filteredChunk.MetadataJson,
+                Document = filteredChunk.Document
+            };
+
+            var batchAnswer = await _ragAnswerService.AnswerFromChunksAsync(
+                question, new[] { batchChunk }, filters, cancellationToken);
+
+            var extractedFromBatch = ExtractRowLines(batchAnswer);
+
+            if (extractedFromBatch.Count == 0)
+                extractedFromBatch = batch;
+
+            allRows.AddRange(extractedFromBatch);
+        }
+
+        var dedupedRows = new Dictionary<int, string>();
+        foreach (var row in allRows)
+        {
+            var num = ExtractRowNumber(row);
+            if (num > 0 && !dedupedRows.ContainsKey(num))
+                dedupedRows[num] = row;
+        }
+
+        var sb = new StringBuilder();
+        foreach (var kvp in dedupedRows.OrderBy(k => k.Key))
+            sb.AppendLine(kvp.Value);
+        sb.AppendLine();
+        sb.AppendLine($"Found {dedupedRows.Count} rows.");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static List<string> ExtractRowLines(string answer)
+    {
+        var rows = new List<string>();
+        if (string.IsNullOrWhiteSpace(answer)) return rows;
+
+        foreach (var rawLine in answer.Split('\n'))
+        {
+            var line = rawLine.Trim();
+
+            if (line.StartsWith("**")) line = line.TrimStart('*');
+            if (line.StartsWith("- ") || line.StartsWith("* ") || line.StartsWith("• "))
+                line = line.Substring(2).Trim();
+            if (line.Length > 2 && char.IsDigit(line[0]) && line[1] == '.' && line[2] == ' ')
+                line = line.Substring(3).Trim();
+            if (line.EndsWith("**")) line = line.TrimEnd('*');
+
+            if (line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
+                rows.Add(line.TrimEnd());
+        }
+
+        return rows;
+    }
+
+    private static int ExtractRowNumber(string rowLine)
+    {
+        if (string.IsNullOrWhiteSpace(rowLine)) return -1;
+        var colon = rowLine.IndexOf(':');
+        if (colon < 4) return -1;
+        var numPart = rowLine.Substring(4, colon - 4).Trim();
+        return int.TryParse(numPart, out var n) ? n : -1;
+    }
+
+    #endregion
 }

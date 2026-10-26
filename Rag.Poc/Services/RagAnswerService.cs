@@ -20,15 +20,27 @@ public sealed class RagAnswerService
         _languageModelService = languageModelService;
     }
 
+    #region Public Methods
+    /// <summary>
+    /// Get the Answer from llm model
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="chunks"></param>
+    /// <param name="filters"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task<string> AnswerFromChunksAsync(
         string question,
         IReadOnlyList<DocumentChunk> chunks,
+        IReadOnlyList<QueryFilter>? filters,
         CancellationToken cancellationToken = default)
     {
         if (chunks.Count == 0)
             return "I couldn't find relevant information in our company documents.";
 
         return await _languageModelService.GenerateAnswerAsync(
-            question, chunks, cancellationToken);
+            question, chunks, filters, cancellationToken);
     }
+
+    #endregion
 }

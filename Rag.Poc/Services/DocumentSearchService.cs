@@ -1,9 +1,4 @@
-﻿using NpgsqlTypes;
-using Rag.Poc.Constants;
-using Rag.Poc.Enums;
-using System.Security.Cryptography;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public sealed class DocumentSearchService
 {
@@ -24,6 +19,15 @@ public sealed class DocumentSearchService
         _logger = logger;
     }
 
+    #region Public Methods
+    /// <summary>
+    /// Search the chunks/docs for answer generation
+    /// </summary>
+    /// <param name="plan"></param>
+    /// <param name="requestedTopK"></param>
+    /// <param name="requestedNamespace"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task<List<ScoredChunk>> SearchAsync(
         RetrievalPlan plan,
         int? requestedTopK = null,
@@ -157,6 +161,100 @@ public sealed class DocumentSearchService
             .ToList();
     }
 
+    /// <summary>
+    /// Search the chunks/docs for answer generation with scores
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="topK"></param>
+    /// <param name="ns"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    public async Task<List<ScoredChunk>> SearchWithScoresAsync(
+    string query, int topK, string? ns,
+    CancellationToken cancellationToken = default)
+    {
+        return await SearchDetailedAsync(new RetrievalOptions
+        {
+            Query = query,
+            TopK = topK,
+            Namespace = ns,
+            UseHybrid = true,
+            UseReranker = false
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Serach the chunks/docs with details
+    /// </summary>
+    /// <param name="options"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public async Task<List<ScoredChunk>> SearchDetailedAsync(
+        RetrievalOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(options.Query))
+            throw new ArgumentException("Query empty.", nameof(options));
+        if (options.TopK <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.TopK));
+
+        var candidates = options.UseHybrid
+            ? options.TopK * options.CandidateMultiplier
+            : options.TopK;
+
+        var vectorTask = VectorSearchAsync(options, candidates, cancellationToken);
+        var bm25Task = options.UseHybrid
+            ? Bm25SearchAsync(options, candidates, cancellationToken)
+            : Task.FromResult(new List<ScoredChunk>());
+
+        await Task.WhenAll(vectorTask, bm25Task);
+
+        var vectorResults = await vectorTask;
+        var bm25Results = await bm25Task;
+
+        List<ScoredChunk> merged = (options.UseHybrid && bm25Results.Count > 0)
+            ? ReciprocalRankFusion(vectorResults, bm25Results)
+            : vectorResults;
+
+        if (options.MinSimilarity.HasValue)
+        {
+            merged = merged
+                .Where(x => x.Source == "bm25" || x.Score >= options.MinSimilarity.Value)
+                .ToList();
+        }
+
+        if (options.UseReranker && merged.Count > 1)
+        {
+            var toRerank = merged.Count > RagConstants.MaxRerankCandidates
+                ? merged.Take(RagConstants.MaxRerankCandidates).ToList()
+                : merged;
+
+            var tail = merged.Count > RagConstants.MaxRerankCandidates
+                ? merged.Skip(RagConstants.MaxRerankCandidates).ToList()
+                : new List<ScoredChunk>();
+
+            try
+            {
+                var reranked = await _reranker.RerankAsync(
+                    options.Query, toRerank, options.TopK, cancellationToken);
+
+                merged = reranked.Concat(tail).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Reranker threw; using unranked order.");
+            }
+        }
+
+        return merged.Take(options.TopK).ToList();
+    }
+
+    #endregion
+
+
+    #region Private Methods
     private static string FormatFilters(IReadOnlyList<QueryFilter>? filters)
     {
         if (filters is not { Count: > 0 }) return "(none)";
@@ -245,80 +343,6 @@ public sealed class DocumentSearchService
                 Source = "exhaustive-text"
             })
             .ToList();
-    }
-
-    public async Task<List<ScoredChunk>> SearchWithScoresAsync(
-        string query, int topK, string? ns,
-        CancellationToken cancellationToken = default)
-    {
-        return await SearchDetailedAsync(new RetrievalOptions
-        {
-            Query = query,
-            TopK = topK,
-            Namespace = ns,
-            UseHybrid = true,
-            UseReranker = false
-        }, cancellationToken);
-    }
-
-    public async Task<List<ScoredChunk>> SearchDetailedAsync(
-        RetrievalOptions options,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(options.Query))
-            throw new ArgumentException("Query empty.", nameof(options));
-        if (options.TopK <= 0)
-            throw new ArgumentOutOfRangeException(nameof(options.TopK));
-
-        var candidates = options.UseHybrid
-            ? options.TopK * options.CandidateMultiplier
-            : options.TopK;
-
-        var vectorTask = VectorSearchAsync(options, candidates, cancellationToken);
-        var bm25Task = options.UseHybrid
-            ? Bm25SearchAsync(options, candidates, cancellationToken)
-            : Task.FromResult(new List<ScoredChunk>());
-
-        await Task.WhenAll(vectorTask, bm25Task);
-
-        var vectorResults = await vectorTask;
-        var bm25Results = await bm25Task;
-
-        List<ScoredChunk> merged = (options.UseHybrid && bm25Results.Count > 0)
-            ? ReciprocalRankFusion(vectorResults, bm25Results)
-            : vectorResults;
-
-        if (options.MinSimilarity.HasValue)
-        {
-            merged = merged
-                .Where(x => x.Source == "bm25" || x.Score >= options.MinSimilarity.Value)
-                .ToList();
-        }
-
-        if (options.UseReranker && merged.Count > 1)
-        {
-            var toRerank = merged.Count > RagConstants.MaxRerankCandidates
-                ? merged.Take(RagConstants.MaxRerankCandidates).ToList()
-                : merged;
-
-            var tail = merged.Count > RagConstants.MaxRerankCandidates
-                ? merged.Skip(RagConstants.MaxRerankCandidates).ToList()
-                : new List<ScoredChunk>();
-
-            try
-            {
-                var reranked = await _reranker.RerankAsync(
-                    options.Query, toRerank, options.TopK, cancellationToken);
-
-                merged = reranked.Concat(tail).ToList();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Reranker threw; using unranked order.");
-            }
-        }
-
-        return merged.Take(options.TopK).ToList();
     }
 
     private async Task<List<ScoredChunk>> VectorSearchAsync(
@@ -583,8 +607,8 @@ public sealed class DocumentSearchService
     }
 
     private async Task<List<ScoredChunk>> SearchFilteredRowsAsync(
-        RetrievalPlan plan,
-        CancellationToken cancellationToken)
+    RetrievalPlan plan,
+    CancellationToken cancellationToken)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
 
@@ -604,67 +628,77 @@ public sealed class DocumentSearchService
             .Take(5000)
             .ToListAsync(cancellationToken);
 
-        var results = new List<ScoredChunk>();
-        var seenChunkIds = new HashSet<Guid>();
+        var matchedRows = new SortedDictionary<int, string>();
+        var matchedBlockIds = new HashSet<Guid>();
+        var documentMap = new Dictionary<Guid, DocumentChunk>();
 
         foreach (var chunk in candidates)
         {
             if (chunk.MetadataJson?.Contains("\"RecordType\":\"ExcelRows\"") != true)
                 continue;
 
-            var matched = chunk.Content
-                .Split('\n')
-                .Any(line => line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase)
-                             && RowMatchesFilter(line, plan));
-
-            if (matched && seenChunkIds.Add(chunk.Id))
+            foreach (var line in (chunk.Content ?? "").Split('\n'))
             {
-                results.Add(new ScoredChunk
-                {
-                    Chunk = chunk,
-                    Score = 1.0,
-                    Source = "filtered"
-                });
-            }
-        }
+                if (!line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
-        if (plan.Filters is { Count: > 0 })
-        {
-            foreach (var filter in plan.Filters)
-            {
-                if (string.IsNullOrWhiteSpace(filter.Column)) continue;
+                if (!RowMatchesFilter(line, plan))
+                    continue;
 
-                var needle = $"\"ColumnName\":\"{filter.Column}\"";
-                var columnChunks = candidates
-                    .Where(c => c.MetadataJson?.Contains("\"RecordType\":\"ExcelColumn\"") == true
-                                && c.MetadataJson.Contains(needle))
-                    .ToList();
+                var colon = line.IndexOf(':');
+                if (colon < 0) continue;
+                if (!int.TryParse(line.Substring(4, colon - 4).Trim(), out var rowNum))
+                    continue;
 
-                foreach (var columnChunk in columnChunks)
-                {
-                    if (!seenChunkIds.Add(columnChunk.Id)) continue;
-                    results.Add(new ScoredChunk
-                    {
-                        Chunk = columnChunk,
-                        Score = 1.0,
-                        Source = "filtered-column"
-                    });
-                }
+                if (!matchedRows.ContainsKey(rowNum))
+                    matchedRows[rowNum] = line.TrimEnd();
+
+                matchedBlockIds.Add(chunk.Id);
+                if (!documentMap.ContainsKey(chunk.DocumentId))
+                    documentMap[chunk.DocumentId] = chunk;
             }
         }
 
         _logger.LogInformation(
-            "SearchFilteredRowsAsync: {RowBlocks} row-blocks, {ColChunks} column-chunks, filters=[{Filters}]",
-            results.Count(r => r.Source == "filtered"),
-            results.Count(r => r.Source == "filtered-column"),
+            "SearchFilteredRowsAsync: {RowBlocks} row-blocks, {MatchedRows} matched rows, filters=[{Filters}]",
+            matchedBlockIds.Count,
+            matchedRows.Count,
             FormatFilters(plan.Filters));
 
-        results = results
-            .OrderByDescending(r => r.Source == "filtered-column")
-            .ThenByDescending(r => r.Score)
-            .ToList();
+        if (matchedRows.Count == 0)
+            return new List<ScoredChunk>();
 
-        return results;
+        var firstChunk = documentMap.Values.FirstOrDefault();
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("VERIFIED MATCHING ROWS (already filtered by the search engine):");
+        sb.AppendLine($"Filter: {FormatFilters(plan.Filters)}");
+        sb.AppendLine();
+        foreach (var kvp in matchedRows)
+            sb.AppendLine(kvp.Value);
+
+        var synthetic = new DocumentChunk
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = firstChunk?.DocumentId ?? Guid.Empty,
+            ChunkIndex = -1,
+            Content = sb.ToString(),
+            TokenCount = sb.Length / 4,
+            SectionTitle = "Filtered rows",
+            SourceLocation = $"Worksheet: {firstChunk?.SectionTitle ?? "Unknown"}, Matched rows",
+            Namespace = plan.Namespaces?.FirstOrDefault() ?? "v2-structural",
+            MetadataJson = "{\"RecordType\":\"ExcelRows\"}",
+            Document = firstChunk?.Document
+        };
+
+        return new List<ScoredChunk>
+        {
+            new ScoredChunk
+            {
+                Chunk = synthetic,
+                Score = 1.0,
+                Source = "filtered"
+            }
+        };
     }
 
     private static bool RowMatchesFilter(string rowLine, RetrievalPlan plan)
@@ -815,4 +849,6 @@ public sealed class DocumentSearchService
         }
         return hints;
     }
+
+    #endregion
 }

@@ -1,6 +1,4 @@
-﻿using System.Security.Cryptography;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public class DocumentService
 {
@@ -11,7 +9,14 @@ public class DocumentService
         _db = db;
     }
 
-    public async Task<Document> GetOrCreateAsync(
+    #region Public Methods
+    /// <summary>
+    /// To get or add new document into db
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <param name="filePath"></param>
+    /// <returns></returns>
+    public async Task<Models.Document> GetOrCreateAsync(
         Guid projectId,
         string filePath)
     {
@@ -35,7 +40,7 @@ public class DocumentService
             return existing;
         }
 
-        var document = new Document
+        var document = new Models.Document
         {
             Id = Guid.NewGuid(),
             ProjectId = projectId,
@@ -55,6 +60,9 @@ public class DocumentService
         return document;
     }
 
+    #endregion
+
+    #region Private Methods
     private static async Task<string> CalculateHashAsync(
         string filePath)
     {
@@ -84,4 +92,6 @@ public class DocumentService
             _ => "application/octet-stream"
         };
     }
+
+    #endregion
 }

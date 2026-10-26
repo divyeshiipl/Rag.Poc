@@ -8,13 +8,13 @@ public class RagDbContext : DbContext
     public RagDbContext(DbContextOptions<RagDbContext> options) : base(options) { }
 
     public DbSet<Project> Projects => Set<Project>();
-    public DbSet<Document> Documents => Set<Document>();
+    public DbSet<Models.Document> Documents => Set<Models.Document>();
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Project>().HasKey(x => x.Id);
-        modelBuilder.Entity<Document>().HasKey(x => x.Id);
+        modelBuilder.Entity<Models.Document>().HasKey(x => x.Id);
         modelBuilder.Entity<DocumentChunk>().HasKey(x => x.Id);
 
         modelBuilder.Entity<Project>()
@@ -23,7 +23,7 @@ public class RagDbContext : DbContext
             .HasForeignKey(x => x.ProjectId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        modelBuilder.Entity<Document>()
+        modelBuilder.Entity<Models.Document>()
             .HasMany(x => x.Chunks)
             .WithOne(x => x.Document)
             .HasForeignKey(x => x.DocumentId)

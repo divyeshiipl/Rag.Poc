@@ -1,9 +1,4 @@
-﻿using Rag.Poc.Constants;
-using Rag.Poc.Enums;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-
-namespace Rag.Poc.Models;
+﻿namespace Rag.Poc.Models;
 
 public sealed record QueryFilter(
     string Column,
@@ -34,6 +29,14 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         _logger = logger;
     }
 
+    #region Public Methods
+    /// <summary>
+    /// To Create plan to retrive the chunks
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentException"></exception>
     public async Task<RetrievalPlan> CreatePlanAsync(
         string question,
         CancellationToken cancellationToken = default)
@@ -61,6 +64,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return MergeSubPlans(cleaned, subQuestions, subPlans);
     }
 
+    #endregion
+
+    #region Private Methods
     private static string StripDocumentReference(string question)
     {
         var patterns = new[]
@@ -638,4 +644,6 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         return result.Count == 0 ? null : result;
     }
+
+    #endregion
 }

@@ -1,6 +1,4 @@
-﻿using Rag.Poc.Constants;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 /// <summary>
 /// Provides embedding functionality using the BGE-small model.
@@ -11,6 +9,7 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     private readonly BertTokenizer _tokenizer;
     private readonly BgeSmallOptions _options;
 
+    #region Public Methods
     /// <summary>
     /// Initializes a new instance of the <see cref="EmbeddingService"/> class.
     /// </summary>
@@ -59,6 +58,9 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
         return GenerateEmbeddingAsync(query, cancellationToken);
     }
 
+    #endregion
+
+    #region Private Methods
     /// <summary>
     /// Generates an embedding for the given text.
     /// </summary>
@@ -162,4 +164,6 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     {
         _session.Dispose();
     }
+
+    #endregion
 }

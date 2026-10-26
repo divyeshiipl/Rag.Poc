@@ -9,6 +9,15 @@ public class ProjectService
         _db = db;
     }
 
+    #region Public Methods
+
+    /// <summary>
+    /// To Add a new Project
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="folder"></param>
+    /// <param name="description"></param>
+    /// <returns></returns>
     public async Task<Project> CreateAsync(
         string name,
         string folder,
@@ -30,10 +39,17 @@ public class ProjectService
         return project;
     }
 
+    /// <summary>
+    /// To get project by projectid
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <returns></returns>
     public async Task<Project?> GetAsync(Guid projectId)
     {
         return await _db.Projects
             .Include(x => x.Documents)
             .FirstOrDefaultAsync(x => x.Id == projectId);
     }
+
+    #endregion
 }

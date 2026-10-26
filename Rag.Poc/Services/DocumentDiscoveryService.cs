@@ -2,6 +2,11 @@
 
 public class DocumentDiscoveryService
 {
+    /// <summary>
+    /// Discover the documents from the project's folder
+    /// </summary>
+    /// <param name="projectFolder"></param>
+    /// <returns></returns>
     public IEnumerable<string> Discover(
         string projectFolder)
     {

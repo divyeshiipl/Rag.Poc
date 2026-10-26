@@ -24,6 +24,7 @@ builder.Services.AddHttpClient<IRerankerService, OllamaRerankerService>(c =>
 builder.Services.AddHttpClient<IRetrievalPlanner, OllamaRetrievalPlanner>(client =>
 {
     client.BaseAddress = new Uri("http://localhost:11434");
+    client.Timeout = TimeSpan.FromMinutes(30);
 });
 builder.Services.AddSwaggerGen();
 
@@ -49,7 +50,7 @@ builder.Services.AddSingleton<IEmbeddingService, EmbeddingService>();
 builder.Services.AddHttpClient<ILanguageModelService, OllamaLanguageModelService>(
     client => {
         client.BaseAddress = new Uri("http://localhost:11434");
-        client.Timeout = TimeSpan.FromMinutes(10);
+        client.Timeout = TimeSpan.FromMinutes(30);
     }); 
 
 builder.Services.AddOpenApi();

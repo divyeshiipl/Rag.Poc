@@ -1,6 +1,4 @@
-﻿using Rag.Poc.Constants;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public sealed class OllamaLanguageModelService : ILanguageModelService
 {
@@ -11,87 +9,66 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         _httpClient = httpClient;
     }
 
+    #region Public Methods
+
     /// <summary>
-    /// Generates an answer to a question based on the provided document chunks.
+    /// To Generate the answer from ollama with prompt 
     /// </summary>
     /// <param name="question"></param>
     /// <param name="chunks"></param>
+    /// <param name="filters"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
     /// <exception cref="InvalidOperationException"></exception>
     public async Task<string> GenerateAnswerAsync(
     string question,
     IReadOnlyList<DocumentChunk> chunks,
+    IReadOnlyList<QueryFilter>? filters,
     CancellationToken cancellationToken = default)
     {
         var context = BuildContext(chunks);
-
-        var parts = question.Split(" | ", StringSplitOptions.RemoveEmptyEntries);
-        var multiNote = parts.Length > 1
-            ? $"This query contains {parts.Length} sub-questions. Answer each one separately, " +
-              $"using headings \"Answer 1:\", \"Answer 2:\", and so on."
-            : string.Empty;
+        var filterSection = BuildFilterSection(filters);
 
         var prompt = $"""
-            You are an AI assistant answering questions about internal company documents.
+        You are an AI assistant answering questions about internal company documents.
 
-            Answer using ONLY the provided context. Do not use outside knowledge.
-            Do not invent facts.
+        Answer using ONLY the provided context. Do not use outside knowledge.
+        Do not invent facts.
 
-            If the context does not contain enough information, say exactly:
-            "The available documents do not provide enough information to answer this question."
+        If the context does not contain enough information, say exactly:
+        "The available documents do not provide enough information to answer this question."
 
-            When the question is about rows in a spreadsheet:
-            - The context may contain a chunk labelled "Column: X". That chunk is a
-              complete list of Row N → value pairs for column X. Treat it as the
-              full set of rows that exist in column X.
-            - If the question filters on column X, list ONLY the rows whose value
-              in column X matches the requested value. Rows absent from the column
-              chunk must not be listed.
-            - If a row block contains a mix of matching and non-matching rows,
-              list only the matching rows.
-            - Use the exact column names shown in the block: Asset ID, Asset Name,
-              Category, Department, Location, Purchase Date, Purchase Cost ($),
-              Status. Do not use placeholder names.
-            - For count, sum, average, min, max, top N, bottom N questions, read
-              the value from the "Aggregates" chunk. Do not compute manually.
+        {filterSection}
 
-            Format the answer as a plain list of rows, one row per line, using the
-            text from the block. Do not explain your reasoning. Do not restate
-            these instructions. Do not number your lines with "Step A", "Step B",
-            etc. — just give the answer.
+        CONTEXT:
+        {context}
 
-            {multiNote}
+        USER QUESTION:
+        {question}
 
-            CONTEXT:
-            {context}
-
-            USER QUESTION:
-            {question}
-
-            ANSWER:
-            /no_think
-            """;
+        ANSWER:
+        /no_think
+        """;
 
         var request = new
         {
             model = RagConstants.Model,
             prompt,
             stream = false,
-            keep_alive = "10m",
+            keep_alive = "1h",
             think = false,
             options = new
             {
-                temperature = 1.0,
+                temperature = 0,
                 num_predict = RagConstants.NumPredict,
-                num_ctx = RagConstants.NumCtx
+                num_ctx = RagConstants.NumCtx,
+                num_thread = Math.Max(2, Environment.ProcessorCount / 2),
+                num_batch = 128
             }
         };
 
         using var response = await _httpClient.PostAsJsonAsync(
             "/api/generate", request, cancellationToken);
-
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(
@@ -101,6 +78,39 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             throw new InvalidOperationException("Ollama returned an empty response.");
 
         return result.Response.Trim();
+    }
+
+    #endregion
+
+    #region Private Methods
+    private static string BuildFilterSection(IReadOnlyList<QueryFilter>? filters)
+    {
+        if (filters is not { Count: > 0 })
+            return string.Empty;
+
+        var filterDesc = string.Join(" AND ", filters.Select(f =>
+            f.Operator == "between"
+                ? $"{f.Column} between \"{f.Value}\" and \"{f.UpperBound}\""
+                : $"{f.Column} {f.Operator} \"{f.Value}\""));
+
+        return $"""
+        FILTER: {filterDesc}
+
+        The context contains a block labeled "VERIFIED MATCHING ROWS".
+        Every "Row N:" line inside that block is a verified match.
+
+        OUTPUT — exactly this:
+        1. Copy each "Row N:" line from the block, verbatim, one per output line.
+        2. Do not skip any row.
+        3. Do not output anything except the row lines and a final count line.
+        4. The final line is: "Found N rows." where N = number of rows copied.
+
+        Example for a block with 3 rows:
+          Row 5: Asset ID: AST-1003 | ...
+          Row 10: Asset ID: AST-1008 | ...
+          Row 11: Asset ID: AST-1009 | ...
+          Found 3 rows.
+        """;
     }
 
     private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
@@ -113,8 +123,9 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             if (sb.Length >= RagConstants.MaxTotalContextChars) break;
 
             var content = chunk.Content ?? string.Empty;
-            var isExcel = chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
-            var cap = isExcel ? 6_000 : RagConstants.MaxCharsPerChunk;
+            var isExcel = chunk.SourceLocation?.StartsWith(
+                "Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
+            var cap = isExcel ? 2_000 : RagConstants.MaxCharsPerChunk;
             if (content.Length > cap) content = content[..cap];
 
             sb.AppendLine($"[Source {i++}]");
@@ -128,4 +139,6 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
 
         return sb.ToString();
     }
+
+    #endregion
 }

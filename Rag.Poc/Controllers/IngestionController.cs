@@ -1,7 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.Services;
-
-namespace Rag.Poc.Controllers;
+﻿namespace Rag.Poc.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -14,6 +11,12 @@ public class IngestionController : ControllerBase
         _ingestionService = ingestionService;
     }
 
+    /// <summary>
+    /// To create the chunks of all documents of a project
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     [HttpPost("projects/{projectId:guid}")]
     public async Task<IActionResult> ProcessProject(
         Guid projectId,
@@ -23,6 +26,11 @@ public class IngestionController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// To recreate the chunks of all documents of a project
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <returns></returns>
     [HttpPost("projects/{projectId:guid}/rechunk")]
     public async Task<IActionResult> RechunkProject(
         Guid projectId)

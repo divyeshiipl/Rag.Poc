@@ -18,6 +18,16 @@ public sealed class OllamaRerankerService : IRerankerService
         _logger = logger;
     }
 
+    #region Public Methods
+
+    /// <summary>
+    /// To rerank the chunks
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="candidates"></param>
+    /// <param name="topN"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task<List<ScoredChunk>> RerankAsync(
         string query,
         List<ScoredChunk> candidates,
@@ -101,6 +111,9 @@ public sealed class OllamaRerankerService : IRerankerService
         }
     }
 
+    #endregion
+
+    #region Private Methods
     private static List<double> ParseScoreArray(string raw)
     {
         var start = raw.IndexOf('[');
@@ -118,4 +131,6 @@ public sealed class OllamaRerankerService : IRerankerService
             return new List<double>();
         }
     }
+
+    #endregion
 }

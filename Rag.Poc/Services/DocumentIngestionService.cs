@@ -1,6 +1,4 @@
-﻿using Rag.Poc.Constants;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 /// <summary>
 /// Provides functionality for ingesting and processing documents.
@@ -26,9 +24,9 @@ public class DocumentIngestionService
 
     private static readonly Dictionary<string, int> ExcelRowsPerBlock = new()
     {
-        [Namespaces.Default] = 10,
-        [Namespaces.Structural] = 30,
-        [Namespaces.Large] = 60
+        [Namespaces.Default] = 5,
+        [Namespaces.Structural] = 5,
+        [Namespaces.Large] = 5
     };
 
     public DocumentIngestionService(
@@ -47,6 +45,13 @@ public class DocumentIngestionService
         _logger = logger;
     }
 
+    #region Public Methods
+    /// <summary>
+    /// Process and create chunks of the docs
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task<IngestionResult> ProcessProjectAsync(
         Guid projectId,
         CancellationToken cancellationToken = default)
@@ -86,6 +91,15 @@ public class DocumentIngestionService
         return result;
     }
 
+    /// <summary>
+    /// Process and rechunks the docs
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <param name="chunkSize"></param>
+    /// <param name="overlap"></param>
+    /// <param name="minChunkChars"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async Task<int> RechunkProjectAsync(
         Guid projectId,
         int chunkSize = 600,
@@ -157,8 +171,11 @@ public class DocumentIngestionService
         return processedDocuments;
     }
 
+    #endregion
+
+    #region Private Methods
     private async Task ProcessDocumentAsync(
-        Document document,
+        Models.Document document,
         CancellationToken cancellationToken)
     {
         _logger.LogInformation(
@@ -196,7 +213,7 @@ public class DocumentIngestionService
     }
 
     private List<DocumentChunk> BuildChunksForNamespace(
-        Document document,
+        Models.Document document,
         ExtractedDocument extractedDocument,
         bool isExcel,
         string ns,
@@ -273,99 +290,27 @@ public class DocumentIngestionService
             chunks.Add(BuildExcelChunk(documentId, ns, chunkIndex++, section));
         }
 
-        if (rowSections.Count > 0)
+        foreach (var section in rowSections)
         {
-            var sheetGroups = rowSections.GroupBy(s =>
+            if (string.IsNullOrWhiteSpace(section.Content)) continue;
+
+            chunks.Add(new DocumentChunk
             {
-                if (s.Metadata.TryGetValue("WorksheetName", out var ws)
-                    && !string.IsNullOrWhiteSpace(ws))
-                    return ws;
-                return s.Heading ?? "Sheet";
+                Id = Guid.NewGuid(),
+                DocumentId = documentId,
+                ChunkIndex = chunkIndex++,
+                Content = section.Content,
+                TokenCount = Math.Max(1, section.Content.Length / 4),
+                SectionTitle = section.Heading,
+                SourceLocation = section.SourceLocation,
+                Namespace = ns,
+                MetadataJson = System.Text.Json.JsonSerializer.Serialize(
+                    new Dictionary<string, string>(section.Metadata)
+                    {
+                        ["RecordType"] = "ExcelRows"
+                    })
             });
-
-            foreach (var sheetGroup in sheetGroups)
-            {
-                var sheetName = sheetGroup.Key;
-                var allRows = new List<(int RowNum, string Line)>();
-                var headers = new List<string>();
-
-                var orderedSections = sheetGroup.OrderBy(s =>
-                {
-                    if (s.Metadata.TryGetValue("FirstRow", out var f)
-                        && int.TryParse(f, out var n))
-                        return n;
-                    return 0;
-                });
-
-                foreach (var section in orderedSections)
-                {
-                    if (headers.Count == 0)
-                    {
-                        foreach (var line in section.Content.Split('\n'))
-                        {
-                            if (line.StartsWith("Columns: ", StringComparison.OrdinalIgnoreCase))
-                            {
-                                headers.Add(line);
-                                break;
-                            }
-                        }
-                    }
-
-                    foreach (var rawLine in section.Content.Split('\n'))
-                    {
-                        if (!rawLine.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        var colon = rawLine.IndexOf(':');
-                        if (colon < 0) continue;
-
-                        var numPart = rawLine.Substring(4, colon - 4).Trim();
-                        if (!int.TryParse(numPart, out var rowNum)) continue;
-
-                        allRows.Add((rowNum, rawLine));
-                    }
-                }
-
-                if (allRows.Count == 0) continue;
-
-                for (var i = 0; i < allRows.Count; i += rowsPerBlock)
-                {
-                    var take = Math.Min(rowsPerBlock, allRows.Count - i);
-                    var blockRows = allRows.GetRange(i, take);
-
-                    var sb = new System.Text.StringBuilder();
-                    sb.AppendLine($"Worksheet: {sheetName}");
-                    foreach (var h in headers) sb.AppendLine(h);
-                    foreach (var (_, line) in blockRows) sb.AppendLine(line);
-
-                    var firstRow = blockRows[0].RowNum;
-                    var lastRow = blockRows[^1].RowNum;
-
-                    chunks.Add(new DocumentChunk
-                    {
-                        Id = Guid.NewGuid(),
-                        DocumentId = documentId,
-                        ChunkIndex = chunkIndex++,
-                        Content = sb.ToString().TrimEnd(),
-                        TokenCount = Math.Max(1, sb.Length / 4),
-                        SectionTitle = $"{sheetName} — rows {firstRow}-{lastRow}",
-                        SourceLocation = $"Worksheet: {sheetName}, Rows: {firstRow}-{lastRow}",
-                        Namespace = ns,
-                        MetadataJson = System.Text.Json.JsonSerializer.Serialize(
-                            new Dictionary<string, string>
-                            {
-                                ["WorksheetName"] = sheetName,
-                                ["FirstRow"] = firstRow.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                ["LastRow"] = lastRow.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                ["RowCount"] = take.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                ["RecordType"] = "ExcelRows",
-                                ["Namespace"] = ns
-                            })
-                    });
-                }
-            }
         }
-
         return chunks;
     }
 
@@ -393,4 +338,6 @@ public class DocumentIngestionService
             MetadataJson = System.Text.Json.JsonSerializer.Serialize(metadata)
         };
     }
+
+    #endregion
 }

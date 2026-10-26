@@ -1,8 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Data;
-
-namespace Rag.Poc.Controllers;
+﻿namespace Rag.Poc.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -12,6 +8,11 @@ public class ProjectsQueryController : ControllerBase
 
     public ProjectsQueryController(RagDbContext db) => _db = db;
 
+    /// <summary>
+    /// Get a list of all projects
+    /// </summary>
+    /// <param name="ct"></param>
+    /// <returns></returns>
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
@@ -31,6 +32,12 @@ public class ProjectsQueryController : ControllerBase
         return Ok(projects);
     }
 
+    /// <summary>
+    /// Get the list of documnents by project Id
+    /// </summary>
+    /// <param name="id"></param>
+    /// <param name="ct"></param>
+    /// <returns></returns>
     [HttpGet("{id:guid}/documents")]
     public async Task<IActionResult> GetDocuments(Guid id, CancellationToken ct)
     {

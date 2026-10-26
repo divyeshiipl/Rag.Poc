@@ -1,9 +1,21 @@
-﻿using System.Text.Json;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public class DocumentChunker
 {
+    #region Public Methods
+
+    /// <summary>
+    /// Creates the chunks of the documents
+    /// </summary>
+    /// <param name="documentId"></param>
+    /// <param name="document"></param>
+    /// <param name="chunkSize"></param>
+    /// <param name="overlap"></param>
+    /// <param name="minChunkChars"></param>
+    /// <param name="ns"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    /// <exception cref="ArgumentException"></exception>
     public List<DocumentChunk> Chunk(
         Guid documentId,
         ExtractedDocument document,
@@ -34,6 +46,9 @@ public class DocumentChunker
         return chunks;
     }
 
+    #endregion
+
+    #region Private Methods
     private static List<DocumentChunk> ChunkSection(
         Guid documentId,
         DocumentSection section,
@@ -256,4 +271,6 @@ public class DocumentChunker
         if (string.IsNullOrWhiteSpace(text)) return 0;
         return (int)Math.Ceiling(text.Length / 4.0);
     }
+
+    #endregion
 }

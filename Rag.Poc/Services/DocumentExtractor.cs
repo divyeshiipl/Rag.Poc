@@ -1,12 +1,17 @@
-﻿using DocumentFormat.OpenXml.Packaging;
-using DocumentFormat.OpenXml.Wordprocessing;
-using ExcelDataReader;
-using System.Globalization;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public class DocumentExtractor
 {
+    #region Public Methods
+
+    /// <summary>
+    /// To Extract the documents
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="FileNotFoundException"></exception>
+    /// <exception cref="NotSupportedException"></exception>
     public async Task<ExtractedDocument> ExtractAsync(
         string filePath,
         CancellationToken cancellationToken = default)
@@ -50,6 +55,45 @@ public class DocumentExtractor
         };
     }
 
+    /// <summary>
+    /// To extract the excel/csv files
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="FileNotFoundException"></exception>
+    public async Task<ExtractedDocument> ExtractExcelAsync(
+    string filePath,
+    CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!File.Exists(filePath))
+        {
+            throw new FileNotFoundException(
+                "Excel document was not found.",
+                filePath);
+        }
+
+        var sections = await Task.Run(
+            () => ExtractWorkbook(filePath, cancellationToken),
+            cancellationToken);
+
+        return new ExtractedDocument
+        {
+            Sections = sections,
+            Text = string.Join(
+                Environment.NewLine + Environment.NewLine,
+                sections.Select(section =>
+                    $"Worksheet: {section.Heading}" +
+                    Environment.NewLine +
+                    section.Content))
+        };
+    }
+
+    #endregion
+
+    #region Private Methods
     private static async Task<ExtractedDocument> ExtractTextFileAsync(
         string filePath,
         CancellationToken cancellationToken)
@@ -514,35 +558,6 @@ public class DocumentExtractor
             section.Content.Trim();
     }
 
-    public async Task<ExtractedDocument> ExtractExcelAsync(
-        string filePath,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (!File.Exists(filePath))
-        {
-            throw new FileNotFoundException(
-                "Excel document was not found.",
-                filePath);
-        }
-
-        var sections = await Task.Run(
-            () => ExtractWorkbook(filePath, cancellationToken),
-            cancellationToken);
-
-        return new ExtractedDocument
-        {
-            Sections = sections,
-            Text = string.Join(
-                Environment.NewLine + Environment.NewLine,
-                sections.Select(section =>
-                    $"Worksheet: {section.Heading}" +
-                    Environment.NewLine +
-                    section.Content))
-        };
-    }
-
     private static List<DocumentSection> ExtractWorkbook(
         string filePath,
         CancellationToken cancellationToken)
@@ -623,7 +638,7 @@ public class DocumentExtractor
                 foreach (var colSection in BuildColumnIndexSections(tableSheetName, headers, dataRows))
                     sections.Add(colSection);
 
-                const int ExtractorRowsPerBlock = 10;
+                const int ExtractorRowsPerBlock = 5;
                 for (var blockStart = 0; blockStart < dataRows.Count; blockStart += ExtractorRowsPerBlock)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -769,9 +784,9 @@ public class DocumentExtractor
     }
 
     private static DocumentSection BuildAggregateSection(
-        string sheetName,
-        List<string> headers,
-        List<(int Number, List<string> Values)> dataRows)
+    string sheetName,
+    List<string> headers,
+    List<(int Number, List<string> Values)> dataRows)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Worksheet: {sheetName}");
@@ -815,14 +830,13 @@ public class DocumentExtractor
                 sb.Append($", Avg={(nums.Sum() / nums.Count).ToString("0.####", CultureInfo.InvariantCulture)}");
                 sb.Append($", Min={nums.Min().ToString("0.####", CultureInfo.InvariantCulture)}");
                 sb.Append($", Max={nums.Max().ToString("0.####", CultureInfo.InvariantCulture)}");
+                sb.AppendLine();
 
                 var sorted = dataRows
                     .Select(r => (
                         Row: r.Number,
-                        Raw: c < r.Values.Count ? r.Values[c] : "",
                         Clean: c < r.Values.Count
-                            ? r.Values[c].Replace(",", "").Replace("$", "")
-                                           .Replace("€", "").Replace("£", "").Trim()
+                            ? r.Values[c].Replace(",", "").Replace("$", "").Replace("€", "").Replace("£", "").Trim()
                             : ""))
                     .Where(r => decimal.TryParse(r.Clean, NumberStyles.Any,
                         CultureInfo.InvariantCulture, out _))
@@ -830,13 +844,12 @@ public class DocumentExtractor
                         NumberStyles.Any, CultureInfo.InvariantCulture)))
                     .ToList();
 
-                sb.AppendLine();
-                sb.Append($"  {headers[c]} > TOP 10 (descending): ");
+                sb.Append($"  {headers[c]} > TOP 10: ");
                 sb.AppendLine(string.Join(", ",
                     sorted.OrderByDescending(x => x.Value).Take(10)
                           .Select(x => $"Row {x.Row}={x.Value.ToString("0.####", CultureInfo.InvariantCulture)}")));
 
-                sb.Append($"  {headers[c]} > BOTTOM 10 (ascending): ");
+                sb.Append($"  {headers[c]} > BOTTOM 10: ");
                 sb.AppendLine(string.Join(", ",
                     sorted.OrderBy(x => x.Value).Take(10)
                           .Select(x => $"Row {x.Row}={x.Value.ToString("0.####", CultureInfo.InvariantCulture)}")));
@@ -845,17 +858,15 @@ public class DocumentExtractor
             {
                 sb.Append($", Min={dates.Min():yyyy-MM-dd}");
                 sb.Append($", Max={dates.Max():yyyy-MM-dd}");
+                sb.AppendLine();
 
                 var dateRows = dataRows
-                    .Select(r => (
-                        Row: r.Number,
-                        Raw: c < r.Values.Count ? r.Values[c] : ""))
+                    .Select(r => (Row: r.Number, Raw: c < r.Values.Count ? r.Values[c] : ""))
                     .Where(r => DateTime.TryParse(r.Raw, CultureInfo.InvariantCulture,
                         DateTimeStyles.None, out _))
                     .Select(r => (r.Row, Date: DateTime.Parse(r.Raw, CultureInfo.InvariantCulture)))
                     .ToList();
 
-                sb.AppendLine();
                 sb.Append($"  {headers[c]} > MOST RECENT 5: ");
                 sb.AppendLine(string.Join(", ",
                     dateRows.OrderByDescending(x => x.Date).Take(5)
@@ -897,7 +908,7 @@ public class DocumentExtractor
 
         foreach (var catCol in categoricalColumns)
         {
-            sb.AppendLine($"--- Breakdown of numeric columns by [{headers[catCol]}] ---");
+            sb.AppendLine($"--- Breakdown by [{headers[catCol]}] ---");
 
             var groups = dataRows
                 .Where(r => catCol < r.Values.Count && !string.IsNullOrWhiteSpace(r.Values[catCol]))
@@ -998,4 +1009,6 @@ public class DocumentExtractor
             };
         }
     }
+
+    #endregion
 }

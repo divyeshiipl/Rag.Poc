@@ -1,6 +1,4 @@
-﻿using System.Security.Cryptography;
-
-namespace Rag.Poc.Services;
+﻿namespace Rag.Poc.Services;
 
 public class DocumentSyncService
 {
@@ -18,6 +16,16 @@ public class DocumentSyncService
         _logger = logger;
     }
 
+    #region Public Methods
+
+    /// <summary>
+    /// To Sync the Project (Add Docs/ Update Docs and DocChunks)
+    /// </summary>
+    /// <param name="projectId"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
+    /// <exception cref="DirectoryNotFoundException"></exception>
     public async Task<SyncResult> SyncProjectAsync(
         Guid projectId,
         CancellationToken cancellationToken = default)
@@ -130,8 +138,11 @@ public class DocumentSyncService
         return result;
     }
 
+    #endregion
+
+    #region Private Methods
     private async Task ProcessExistingDocumentAsync(
-        Document document,
+        Models.Document document,
         string projectFolder,
         string filePath,
         SyncResult result,
@@ -170,7 +181,7 @@ public class DocumentSyncService
             filePath);
     }
 
-    private async Task<Document> CreateNewDocumentAsync(
+    private async Task<Models.Document> CreateNewDocumentAsync(
         Project project,
         string projectFolder,
         string filePath,
@@ -188,7 +199,7 @@ public class DocumentSyncService
                 projectFolder,
                 filePath);
 
-        return new Document
+        return new Models.Document
         {
             Id = Guid.NewGuid(),
 
@@ -219,7 +230,7 @@ public class DocumentSyncService
     }
 
     private async Task UpdateChangedDocumentAsync(
-        Document document,
+        Models.Document document,
         string projectFolder,
         string filePath,
         string newHash,
@@ -337,4 +348,6 @@ public class DocumentSyncService
                 "application/octet-stream"
         };
     }
+
+    #endregion
 }
