@@ -12,46 +12,23 @@ public class DocumentExtractor
     /// <returns></returns>
     /// <exception cref="FileNotFoundException"></exception>
     /// <exception cref="NotSupportedException"></exception>
-    public async Task<ExtractedDocument> ExtractAsync(
-        string filePath,
-        CancellationToken cancellationToken = default)
+    public async Task<ExtractedDocument> ExtractAsync(string filePath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(filePath))
         {
-            throw new FileNotFoundException(
-                "Document file was not found.",
-                filePath);
+            throw new FileNotFoundException("Document file was not found.", filePath);
         }
 
-        var extension =
-            Path.GetExtension(filePath)
-                .ToLowerInvariant();
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
 
         return extension switch
         {
-            ".txt" =>
-                await ExtractTextFileAsync(
-                    filePath,
-                    cancellationToken),
-
-            ".docx" =>
-                await ExtractWordDocumentAsync(
-                   filePath,
-                   cancellationToken),
-
-            ".xlsx" =>
-                 await ExtractExcelAsync(
-                    filePath,
-                    cancellationToken),
-
-            ".xls" =>
-                 await ExtractExcelAsync(
-                    filePath,
-                    cancellationToken),
-
-            _ =>
-                throw new NotSupportedException(
-                    $"File type '{extension}' is not supported yet.")
+            ".txt" => await ExtractTextFileAsync(filePath, cancellationToken),
+            ".docx" => await ExtractWordDocumentAsync(filePath, cancellationToken),
+            ".xlsx" => await ExtractExcelAsync(filePath, cancellationToken),
+            ".xls" => await ExtractExcelAsync(filePath, cancellationToken),
+            ".csv" => await ExtractExcelAsync(filePath, cancellationToken),
+            _ => throw new NotSupportedException($"File type '{extension}' is not supported yet.")
         };
     }
 
@@ -62,47 +39,37 @@ public class DocumentExtractor
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
     /// <exception cref="FileNotFoundException"></exception>
-    public async Task<ExtractedDocument> ExtractExcelAsync(
-    string filePath,
-    CancellationToken cancellationToken = default)
+    public async Task<ExtractedDocument> ExtractExcelAsync(string filePath, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!File.Exists(filePath))
         {
-            throw new FileNotFoundException(
-                "Excel document was not found.",
-                filePath);
+            throw new FileNotFoundException("Excel document was not found.", filePath);
         }
 
-        var sections = await Task.Run(
-            () => ExtractWorkbook(filePath, cancellationToken),
-            cancellationToken);
+        var sections = await Task.Run(() => ExtractWorkbook(filePath, cancellationToken), cancellationToken);
 
         return new ExtractedDocument
         {
             Sections = sections,
-            Text = string.Join(
-                Environment.NewLine + Environment.NewLine,
-                sections.Select(section =>
-                    $"Worksheet: {section.Heading}" +
-                    Environment.NewLine +
-                    section.Content))
+            Text = string.Join(Environment.NewLine + Environment.NewLine, sections.Select(section => $"Worksheet: {section.Heading}" + Environment.NewLine + section.Content))
         };
     }
 
     #endregion
 
     #region Private Methods
-    private static async Task<ExtractedDocument> ExtractTextFileAsync(
-        string filePath,
-        CancellationToken cancellationToken)
-    {
-        var text =
-            await File.ReadAllTextAsync(
-                filePath,
-                cancellationToken);
 
+    /// <summary>
+    /// To extract the text files
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private static async Task<ExtractedDocument> ExtractTextFileAsync(string filePath, CancellationToken cancellationToken)
+    {
+        var text = await File.ReadAllTextAsync(filePath, cancellationToken);
         text = NormalizeText(text);
 
         if (string.IsNullOrWhiteSpace(text))
@@ -123,27 +90,24 @@ public class DocumentExtractor
         };
     }
 
-    private static List<DocumentSection> ExtractSections(
-        string text)
+    /// <summary>
+    /// To extract the sections from the sections
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    private static List<DocumentSection> ExtractSections(string text)
     {
-        var lines =
-            text.Split('\n');
-
-        var sections =
-            new List<DocumentSection>();
-
+        var lines = text.Split('\n');
+        var sections = new List<DocumentSection>();
         DocumentSection? currentSection = null;
 
         foreach (var rawLine in lines)
         {
-            var line =
-                rawLine.Trim();
+            var line = rawLine.Trim();
 
             if (string.IsNullOrWhiteSpace(line))
             {
-                AppendBlankLine(
-                    currentSection);
-
+                AppendBlankLine(currentSection);
                 continue;
             }
 
@@ -159,8 +123,7 @@ public class DocumentExtractor
                     }
                 }
 
-                currentSection =
-                    new DocumentSection
+                currentSection = new DocumentSection
                     {
                         Heading = line,
                         Content = string.Empty,
@@ -172,8 +135,7 @@ public class DocumentExtractor
 
             if (currentSection == null)
             {
-                currentSection =
-                    new DocumentSection
+                currentSection = new DocumentSection
                     {
                         Heading = null,
                         Content = string.Empty,
@@ -181,15 +143,12 @@ public class DocumentExtractor
                     };
             }
 
-            AppendLine(
-                currentSection,
-                line);
+            AppendLine(currentSection, line);
         }
 
         if (currentSection != null)
         {
             FinalizeSection(currentSection);
-
             if (HasUsefulContent(currentSection))
             {
                 sections.Add(currentSection);
@@ -199,24 +158,24 @@ public class DocumentExtractor
         return sections;
     }
 
-    private static bool IsTopLevelHeading(
-        string line)
+    /// <summary>
+    /// Checks is there any top level heading
+    /// </summary>
+    /// <param name="line"></param>
+    /// <returns></returns>
+    private static bool IsTopLevelHeading(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
         line = line.Trim();
 
-        if (!Regex.IsMatch(
-            line,
-            @"^\d+[\.\)]\s+\S+"))
+        if (!Regex.IsMatch(line, @"^\d+[\.\)]\s+\S+"))
         {
             return false;
         }
 
-        if (Regex.IsMatch(
-            line,
-            @"[.!?;:]$"))
+        if (Regex.IsMatch(line, @"[.!?;:]$"))
         {
             return false;
         }
@@ -224,9 +183,12 @@ public class DocumentExtractor
         return true;
     }
 
-    private static void AppendLine(
-        DocumentSection section,
-        string line)
+    /// <summary>
+    /// To append the line to the document section
+    /// </summary>
+    /// <param name="section"></param>
+    /// <param name="line"></param>
+    private static void AppendLine(DocumentSection section, string line)
     {
         if (string.IsNullOrEmpty(section.Content))
         {
@@ -242,8 +204,11 @@ public class DocumentExtractor
         section.Content += line;
     }
 
-    private static void AppendBlankLine(
-        DocumentSection? section)
+    /// <summary>
+    /// To append the blank line to documnet section
+    /// </summary>
+    /// <param name="section"></param>
+    private static void AppendBlankLine(DocumentSection? section)
     {
         if (section == null)
             return;
@@ -257,75 +222,73 @@ public class DocumentExtractor
         }
     }
 
-    private static void FinalizeSection(
-        DocumentSection section)
+    /// <summary>
+    /// To finalize the document section
+    /// </summary>
+    /// <param name="section"></param>
+    private static void FinalizeSection(DocumentSection section)
     {
-        section.Content =
-            NormalizeSectionContent(
-                section.Content);
+        section.Content = NormalizeSectionContent(section.Content);
 
-        if (!string.IsNullOrWhiteSpace(
-                section.Heading))
+        if (!string.IsNullOrWhiteSpace(section.Heading))
         {
-            section.Metadata["section"] =
-                section.Heading;
+            section.Metadata["section"] = section.Heading;
         }
     }
 
-    private static bool HasUsefulContent(
-        DocumentSection section)
+    /// <summary>
+    /// To check the useful content of the document section
+    /// </summary>
+    /// <param name="section"></param>
+    /// <returns></returns>
+    private static bool HasUsefulContent(DocumentSection section)
     {
         return
             !string.IsNullOrWhiteSpace(section.Heading) ||
             !string.IsNullOrWhiteSpace(section.Content);
     }
 
-    private static string NormalizeSectionContent(
-        string content)
+    /// <summary>
+    /// To normalize section's content
+    /// </summary>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static string NormalizeSectionContent(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return string.Empty;
 
-        return Regex
-            .Replace(
-                content,
-                @"[ \t]+",
-                " ")
-            .Trim();
+        return Regex.Replace(content, @"[ \t]+", " ").Trim();
     }
 
-    private static string NormalizeText(
-        string text)
+    /// <summary>
+    /// To normalize the text
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    private static string NormalizeText(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return string.Empty;
 
-        return text
-            .Replace("\r\n", "\n")
-            .Replace("\r", "\n")
-            .Trim();
+        return text.Replace("\r\n", "\n").Replace("\r", "\n").Trim();
     }
 
-    private static Task<ExtractedDocument> ExtractWordDocumentAsync(
-    string filePath,
-    CancellationToken cancellationToken)
+    /// <summary>
+    /// To extract the word documents
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private static Task<ExtractedDocument> ExtractWordDocumentAsync(string filePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        using var document =
-            WordprocessingDocument.Open(
-                filePath,
-                false);
-
-        var body =
-            document.MainDocumentPart?
-                .Document
-                .Body;
+        using var document = WordprocessingDocument.Open(filePath, false);
+        var body = document.MainDocumentPart?.Document.Body;
 
         if (body == null)
         {
-            return Task.FromResult(
-                new ExtractedDocument
+            return Task.FromResult(new ExtractedDocument
                 {
                     Text = string.Empty,
                     Sections = []
@@ -333,7 +296,6 @@ public class DocumentExtractor
         }
 
         var sections = new List<DocumentSection>();
-
         DocumentSection? currentSection = null;
 
         foreach (var element in body.Elements())
@@ -342,17 +304,11 @@ public class DocumentExtractor
 
             if (element is Paragraph paragraph)
             {
-                ProcessParagraph(
-                    paragraph,
-                    ref currentSection,
-                    sections);
+                ProcessParagraph(paragraph, ref currentSection, sections);
             }
             else if (element is Table table)
             {
-                ProcessTable(
-                    table,
-                    ref currentSection,
-                    sections);
+                ProcessTable(table, ref currentSection, sections);
             }
         }
 
@@ -364,50 +320,39 @@ public class DocumentExtractor
                 sections.Add(currentSection);
         }
 
-        var text =
-            string.Join(
-                "\n\n",
-                sections
-                    .Select(BuildSectionText)
-                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+        var text = string.Join("\n\n", sections.Select(BuildSectionText).Where(x => !string.IsNullOrWhiteSpace(x)));
 
-        return Task.FromResult(
-            new ExtractedDocument
+        return Task.FromResult(new ExtractedDocument
             {
                 Text = text,
                 Sections = sections
             });
     }
 
-    private static void ProcessParagraph(
-    Paragraph paragraph,
-    ref DocumentSection? currentSection,
-    List<DocumentSection> sections)
+    /// <summary>
+    /// To Process pragraphs
+    /// </summary>
+    /// <param name="paragraph"></param>
+    /// <param name="currentSection"></param>
+    /// <param name="sections"></param>
+    private static void ProcessParagraph(Paragraph paragraph, ref DocumentSection? currentSection, List<DocumentSection> sections)
     {
-        var text =
-            paragraph.InnerText?.Trim();
-
+        var text = paragraph.InnerText?.Trim();
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        var style =
-            paragraph.ParagraphProperties?
-                .ParagraphStyleId?
-                .Val?
-                .Value;
+        var style = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
 
         if (IsHeadingStyle(style))
         {
             if (currentSection != null)
             {
                 FinalizeSection(currentSection);
-
                 if (HasUsefulContent(currentSection))
                     sections.Add(currentSection);
             }
 
-            currentSection =
-                new DocumentSection
+            currentSection = new DocumentSection
                 {
                     Heading = text,
                     Content = string.Empty,
@@ -415,16 +360,14 @@ public class DocumentExtractor
                     SourceLocation = $"Paragraph:{sections.Count + 1}"
                 };
 
-            currentSection.Metadata["style"] =
-                style ?? string.Empty;
+            currentSection.Metadata["style"] = style ?? string.Empty;
 
             return;
         }
 
         if (currentSection == null)
         {
-            currentSection =
-                new DocumentSection
+            currentSection = new DocumentSection
                 {
                     Heading = null,
                     Content = string.Empty,
@@ -432,57 +375,42 @@ public class DocumentExtractor
                 };
         }
 
-        AppendContent(
-            currentSection,
-            text);
+        AppendContent(currentSection, text);
     }
 
-    private static bool IsHeadingStyle(
-    string? style)
+    /// <summary>
+    /// To check is there heading style
+    /// </summary>
+    /// <param name="style"></param>
+    /// <returns></returns>
+    private static bool IsHeadingStyle(string? style)
     {
         if (string.IsNullOrWhiteSpace(style))
             return false;
 
-        return
-            style.Equals(
-                "Heading1",
-                StringComparison.OrdinalIgnoreCase)
-            ||
-            style.Equals(
-                "Heading2",
-                StringComparison.OrdinalIgnoreCase)
-            ||
-            style.Equals(
-                "Heading3",
-                StringComparison.OrdinalIgnoreCase)
-            ||
-            style.Equals(
-                "Heading4",
-                StringComparison.OrdinalIgnoreCase)
-            ||
-            style.Equals(
-                "Heading5",
-                StringComparison.OrdinalIgnoreCase)
-            ||
-            style.Equals(
-                "Heading6",
-                StringComparison.OrdinalIgnoreCase);
+        return style.Equals("Heading1",StringComparison.OrdinalIgnoreCase) ||
+            style.Equals("Heading2", StringComparison.OrdinalIgnoreCase) ||
+            style.Equals("Heading3", StringComparison.OrdinalIgnoreCase) ||
+            style.Equals("Heading4", StringComparison.OrdinalIgnoreCase) ||
+            style.Equals("Heading5", StringComparison.OrdinalIgnoreCase) ||
+            style.Equals("Heading6", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void ProcessTable(
-    Table table,
-    ref DocumentSection? currentSection,
-    List<DocumentSection> sections)
+    /// <summary>
+    /// To process the tables
+    /// </summary>
+    /// <param name="table"></param>
+    /// <param name="currentSection"></param>
+    /// <param name="sections"></param>
+    private static void ProcessTable(Table table, ref DocumentSection? currentSection, List<DocumentSection> sections)
     {
         if (currentSection == null)
         {
-            currentSection =
-                new DocumentSection
+            currentSection = new DocumentSection
                 {
                     Heading = null,
                     Content = string.Empty,
-                    ContentType =
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 };
         }
 
@@ -490,8 +418,7 @@ public class DocumentExtractor
 
         foreach (var row in rows)
         {
-            var cells =
-                row.Elements<TableCell>()
+            var cells = row.Elements<TableCell>()
                     .Select(cell =>
                         NormalizeWhitespace(
                             cell.InnerText))
@@ -502,20 +429,18 @@ public class DocumentExtractor
             if (cells.Count == 0)
                 continue;
 
-            AppendContent(
-                currentSection,
-                string.Join(
-                    " | ",
-                    cells));
+            AppendContent(currentSection, string.Join(" | ", cells));
         }
     }
 
-    private static void AppendContent(
-    DocumentSection section,
-    string content)
+    /// <summary>
+    /// To append the content
+    /// </summary>
+    /// <param name="section"></param>
+    /// <param name="content"></param>
+    private static void AppendContent(DocumentSection section, string content)
     {
-        content =
-            NormalizeWhitespace(content);
+        content = NormalizeWhitespace(content);
 
         if (string.IsNullOrWhiteSpace(content))
             return;
@@ -526,26 +451,28 @@ public class DocumentExtractor
             return;
         }
 
-        section.Content +=
-            "\n" + content;
+        section.Content += "\n" + content;
     }
 
-    private static string NormalizeWhitespace(
-    string? text)
+    /// <summary>
+    /// To normalize the white space
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    private static string NormalizeWhitespace(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return string.Empty;
 
-        return Regex
-            .Replace(
-                text,
-                @"\s+",
-                " ")
-            .Trim();
+        return Regex.Replace(text, @"\s+", " ").Trim();
     }
 
-    private static string BuildSectionText(
-    DocumentSection section)
+    /// <summary>
+    /// To build section text
+    /// </summary>
+    /// <param name="section"></param>
+    /// <returns></returns>
+    private static string BuildSectionText(DocumentSection section)
     {
         if (string.IsNullOrWhiteSpace(section.Heading))
             return section.Content.Trim();
@@ -553,23 +480,19 @@ public class DocumentExtractor
         if (string.IsNullOrWhiteSpace(section.Content))
             return section.Heading.Trim();
 
-        return
-            $"{section.Heading.Trim()}\n\n" +
-            section.Content.Trim();
+        return $"{section.Heading.Trim()}\n\n" + section.Content.Trim();
     }
 
-    private static List<DocumentSection> ExtractWorkbook(
-        string filePath,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// To extract work book
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private static List<DocumentSection> ExtractWorkbook(string filePath, CancellationToken cancellationToken)
     {
         var sections = new List<DocumentSection>();
-
-        using var stream = File.Open(
-            filePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite);
-
+        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         using var reader = ExcelReaderFactory.CreateReader(stream);
 
         do
@@ -607,9 +530,7 @@ public class DocumentExtractor
                 var tableRows = tables[t];
                 if (tableRows.Count == 0) continue;
 
-                var tableSheetName = tables.Count > 1
-                    ? $"{sheetName} (Table {t + 1})"
-                    : sheetName;
+                var tableSheetName = tables.Count > 1 ? $"{sheetName} (Table {t + 1})" : sheetName;
 
                 var headerRow = tableRows[0];
                 var headers = BuildHeaders(headerRow.Values);
@@ -681,7 +602,6 @@ public class DocumentExtractor
             }
         }
         while (reader.NextResult());
-
         return sections;
     }
 
@@ -713,6 +633,11 @@ public class DocumentExtractor
         return headers;
     }
 
+    /// <summary>
+    /// To format cell value
+    /// </summary>
+    /// <param name="value"></param>
+    /// <returns></returns>
     private static string FormatCellValue(object? value)
     {
         if (value is null || value is DBNull)
@@ -736,8 +661,12 @@ public class DocumentExtractor
         return Convert.ToString(value, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
     }
 
-    private static List<List<(int Number, List<string> Values)>> SplitIntoTables(
-    List<(int Number, List<string> Values)> rows)
+    /// <summary>
+    /// To split rows into tables
+    /// </summary>
+    /// <param name="rows"></param>
+    /// <returns></returns>
+    private static List<List<(int Number, List<string> Values)>> SplitIntoTables(List<(int Number, List<string> Values)> rows)
     {
         var tables = new List<List<(int Number, List<string> Values)>>();
         var current = new List<(int Number, List<string> Values)>();
@@ -766,10 +695,14 @@ public class DocumentExtractor
         return tables;
     }
 
-    private static string FormatRowLine(
-    int rowNum,
-    List<string> headers,
-    List<string> values)
+    /// <summary>
+    /// To format the row lines
+    /// </summary>
+    /// <param name="rowNum"></param>
+    /// <param name="headers"></param>
+    /// <param name="values"></param>
+    /// <returns></returns>
+    private static string FormatRowLine(int rowNum, List<string> headers, List<string> values)
     {
         var fields = new List<string>();
 
@@ -783,10 +716,14 @@ public class DocumentExtractor
         return $"Row {rowNum}: {string.Join(" | ", fields)}";
     }
 
-    private static DocumentSection BuildAggregateSection(
-    string sheetName,
-    List<string> headers,
-    List<(int Number, List<string> Values)> dataRows)
+    /// <summary>
+    /// To build aggregate section
+    /// </summary>
+    /// <param name="sheetName"></param>
+    /// <param name="headers"></param>
+    /// <param name="dataRows"></param>
+    /// <returns></returns>
+    private static DocumentSection BuildAggregateSection(string sheetName, List<string> headers, List<(int Number, List<string> Values)> dataRows)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Worksheet: {sheetName}");
@@ -965,10 +902,14 @@ public class DocumentExtractor
         };
     }
 
-    private static IEnumerable<DocumentSection> BuildColumnIndexSections(
-        string sheetName,
-        List<string> headers,
-        List<(int Number, List<string> Values)> dataRows)
+    /// <summary>
+    /// To build column index sections
+    /// </summary>
+    /// <param name="sheetName"></param>
+    /// <param name="headers"></param>
+    /// <param name="dataRows"></param>
+    /// <returns></returns>
+    private static IEnumerable<DocumentSection> BuildColumnIndexSections(string sheetName, List<string> headers, List<(int Number, List<string> Values)> dataRows)
     {
         for (var c = 0; c < headers.Count; c++)
         {

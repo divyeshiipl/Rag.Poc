@@ -1,7 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Models;
-
-namespace Rag.Poc.Data;
+﻿namespace Rag.Poc.Data;
 
 public class RagDbContext : DbContext
 {

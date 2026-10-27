@@ -18,10 +18,7 @@ public class ProjectService
     /// <param name="folder"></param>
     /// <param name="description"></param>
     /// <returns></returns>
-    public async Task<Project> CreateAsync(
-        string name,
-        string folder,
-        string? description = null)
+    public async Task<Project> CreateAsync(string name, string folder, string? description = null)
     {
         var project = new Project
         {
@@ -33,9 +30,7 @@ public class ProjectService
         };
 
         _db.Projects.Add(project);
-
         await _db.SaveChangesAsync();
-
         return project;
     }
 
@@ -46,9 +41,7 @@ public class ProjectService
     /// <returns></returns>
     public async Task<Project?> GetAsync(Guid projectId)
     {
-        return await _db.Projects
-            .Include(x => x.Documents)
-            .FirstOrDefaultAsync(x => x.Id == projectId);
+        return await _db.Projects.Include(x => x.Documents).FirstOrDefaultAsync(x => x.Id == projectId);
     }
 
     #endregion

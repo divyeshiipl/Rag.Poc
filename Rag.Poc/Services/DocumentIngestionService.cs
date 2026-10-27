@@ -14,9 +14,9 @@ public class DocumentIngestionService
 
     private static readonly Dictionary<string, (int Size, int Overlap, int MinChars)> ChunkConfig = new()
     {
-        [Namespaces.Default] = (600, 100, 150),
+        [Namespaces.Default] = (2000, 200, 150),
         [Namespaces.Structural] = (400, 50, 100),
-        [Namespaces.Large] = (900, 200, 200)
+        [Namespaces.Large] = (2500, 300, 200)
     };
 
     private static IReadOnlyList<string> TargetNamespaces(bool isExcel) =>
@@ -29,13 +29,7 @@ public class DocumentIngestionService
         [Namespaces.Large] = 5
     };
 
-    public DocumentIngestionService(
-        RagDbContext db,
-        DocumentSyncService syncService,
-        DocumentExtractor textExtractor,
-        DocumentChunker chunker,
-        IEmbeddingService embeddingService,
-        ILogger<DocumentIngestionService> logger)
+    public DocumentIngestionService(RagDbContext db, DocumentSyncService syncService, DocumentExtractor textExtractor, DocumentChunker chunker, IEmbeddingService embeddingService, ILogger<DocumentIngestionService> logger)
     {
         _db = db;
         _syncService = syncService;
@@ -52,9 +46,7 @@ public class DocumentIngestionService
     /// <param name="projectId"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    public async Task<IngestionResult> ProcessProjectAsync(
-        Guid projectId,
-        CancellationToken cancellationToken = default)
+    public async Task<IngestionResult> ProcessProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         var syncResult = await _syncService.SyncProjectAsync(projectId, cancellationToken);
 
@@ -66,9 +58,7 @@ public class DocumentIngestionService
             DeletedDocuments = syncResult.DeletedDocuments.Count
         };
 
-        var documentsToProcess = syncResult.NewDocuments
-            .Concat(syncResult.ChangedDocuments)
-            .ToList();
+        var documentsToProcess = syncResult.NewDocuments.Concat(syncResult.ChangedDocuments).ToList();
 
         foreach (var document in documentsToProcess)
         {
@@ -80,9 +70,7 @@ public class DocumentIngestionService
             catch (Exception ex)
             {
                 result.FailedDocuments++;
-                _logger.LogError(ex,
-                    "Failed to process document {DocumentId} - {FileName}",
-                    document.Id, document.FileName);
+                _logger.LogError(ex, "Failed to process document {DocumentId} - {FileName}",  document.Id, document.FileName);
                 document.Status = "Failed";
             }
         }
@@ -100,19 +88,13 @@ public class DocumentIngestionService
     /// <param name="minChunkChars"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    public async Task<int> RechunkProjectAsync(
-        Guid projectId,
-        int chunkSize = 600,
-        int overlap = 100,
-        int minChunkChars = 150,
-        CancellationToken cancellationToken = default)
+    public async Task<int> RechunkProjectAsync(Guid projectId,  int chunkSize = 600, int overlap = 100, int minChunkChars = 150, CancellationToken cancellationToken = default)
     {
         var documents = await _db.Documents
             .Where(x => x.ProjectId == projectId)
             .ToListAsync(cancellationToken);
 
         if (documents.Count == 0) return 0;
-
         var processedDocuments = 0;
 
         foreach (var document in documents)
@@ -121,17 +103,14 @@ public class DocumentIngestionService
 
             try
             {
-                _logger.LogInformation(
-                    "Re-chunking document {FileName} into namespaces [{Ns}]",
-                    document.FileName, string.Join(", ", Namespaces.All));
+                _logger.LogInformation("Re-chunking document {FileName} into namespaces [{Ns}]", document.FileName, string.Join(", ", Namespaces.All));
 
                 await _db.DocumentChunks
                     .Where(x => x.DocumentId == document.Id
                                 && Namespaces.All.Contains(x.Namespace))
                     .ExecuteDeleteAsync(cancellationToken);
 
-                var extractedDocument = await _textExtractor.ExtractAsync(
-                    document.FilePath, cancellationToken);
+                var extractedDocument = await _textExtractor.ExtractAsync(document.FilePath, cancellationToken);
 
                 if (string.IsNullOrWhiteSpace(extractedDocument.Text))
                 {
@@ -146,11 +125,7 @@ public class DocumentIngestionService
                 foreach (var targetNs in TargetNamespaces(isExcel))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    var chunks = BuildChunksForNamespace(
-                        document, extractedDocument, isExcel, targetNs,
-                        chunkSize, overlap, minChunkChars);
-
+                    var chunks = BuildChunksForNamespace(document, extractedDocument, isExcel, targetNs, chunkSize, overlap, minChunkChars);
                     await EmbedAndAddChunksAsync(chunks, cancellationToken);
                 }
 
@@ -161,9 +136,7 @@ public class DocumentIngestionService
             catch (Exception ex)
             {
                 document.Status = "Failed";
-                _logger.LogError(ex,
-                    "Failed to re-chunk document {DocumentId} - {FileName}",
-                    document.Id, document.FileName);
+                _logger.LogError(ex,"Failed to re-chunk document {DocumentId} - {FileName}", document.Id, document.FileName);
             }
         }
 
@@ -174,16 +147,20 @@ public class DocumentIngestionService
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// To process documents
+    /// </summary>
+    /// <param name="document"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     private async Task ProcessDocumentAsync(
         Models.Document document,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation(
-            "Processing document {FileName} into namespaces [{Ns}]",
-            document.FileName, string.Join(", ", Namespaces.All));
+        _logger.LogInformation("Processing document {FileName} into namespaces [{Ns}]", document.FileName, string.Join(", ", Namespaces.All));
 
-        var extractedDocument = await _textExtractor.ExtractAsync(
-            document.FilePath, cancellationToken);
+        var extractedDocument = await _textExtractor.ExtractAsync(document.FilePath, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(extractedDocument.Text))
         {
@@ -197,29 +174,27 @@ public class DocumentIngestionService
         foreach (var targetNs in TargetNamespaces(isExcel))
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var chunks = BuildChunksForNamespace(
-                document, extractedDocument, isExcel, targetNs);
-
+            var chunks = BuildChunksForNamespace(document, extractedDocument, isExcel, targetNs);
             await EmbedAndAddChunksAsync(chunks, cancellationToken);
-
-            _logger.LogInformation(
-                "Processed {FileName} -> namespace {Ns}: {ChunkCount} chunks",
-                document.FileName, targetNs, chunks.Count);
+            _logger.LogInformation("Processed {FileName} -> namespace {Ns}: {ChunkCount} chunks", document.FileName, targetNs, chunks.Count);
         }
 
         document.Status = "Completed";
         document.ProcessedAtUtc = DateTime.UtcNow;
     }
 
-    private List<DocumentChunk> BuildChunksForNamespace(
-        Models.Document document,
-        ExtractedDocument extractedDocument,
-        bool isExcel,
-        string ns,
-        int chunkSize = 600,
-        int overlap = 100,
-        int minChunkChars = 150)
+    /// <summary>
+    /// To build chunks for all namespaces
+    /// </summary>
+    /// <param name="document"></param>
+    /// <param name="extractedDocument"></param>
+    /// <param name="isExcel"></param>
+    /// <param name="ns"></param>
+    /// <param name="chunkSize"></param>
+    /// <param name="overlap"></param>
+    /// <param name="minChunkChars"></param>
+    /// <returns></returns>
+    private List<DocumentChunk> BuildChunksForNamespace(Models.Document document, ExtractedDocument extractedDocument, bool isExcel, string ns, int chunkSize = 600, int overlap = 100, int minChunkChars = 150)
     {
         if (isExcel)
             return CreateExcelChunks(document.Id, extractedDocument, ns);
@@ -240,23 +215,29 @@ public class DocumentIngestionService
             document.Id, extractedDocument, size, ovl, min, ns);
     }
 
-    private async Task EmbedAndAddChunksAsync(
-        List<DocumentChunk> chunks,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// To embed and add chunks
+    /// </summary>
+    /// <param name="chunks"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private async Task EmbedAndAddChunksAsync(List<DocumentChunk> chunks, CancellationToken cancellationToken)
     {
         foreach (var chunk in chunks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var embedding = await _embeddingService
-                .GenerateDocumentEmbeddingAsync(chunk.Content, cancellationToken);
-
+            var embedding = await _embeddingService.GenerateDocumentEmbeddingAsync(chunk.Content, cancellationToken);
             chunk.Embedding = new Pgvector.Vector(embedding);
         }
 
         await _db.DocumentChunks.AddRangeAsync(chunks, cancellationToken);
     }
 
+    /// <summary>
+    /// To check if file is excel or not
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <returns></returns>
     private static bool IsExcel(string filePath)
     {
         var ext = Path.GetExtension(filePath);
@@ -264,10 +245,14 @@ public class DocumentIngestionService
             || ext.Equals(".xls", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static List<DocumentChunk> CreateExcelChunks(
-    Guid documentId,
-    ExtractedDocument extractedDocument,
-    string ns)
+    /// <summary>
+    /// To create excel chunks
+    /// </summary>
+    /// <param name="documentId"></param>
+    /// <param name="extractedDocument"></param>
+    /// <param name="ns"></param>
+    /// <returns></returns>
+    private static List<DocumentChunk> CreateExcelChunks(Guid documentId, ExtractedDocument extractedDocument, string ns)
     {
         var rowsPerBlock = ExcelRowsPerBlock.TryGetValue(ns, out var r) ? r : 10;
 
@@ -304,8 +289,7 @@ public class DocumentIngestionService
                 SectionTitle = section.Heading,
                 SourceLocation = section.SourceLocation,
                 Namespace = ns,
-                MetadataJson = System.Text.Json.JsonSerializer.Serialize(
-                    new Dictionary<string, string>(section.Metadata)
+                MetadataJson = JsonSerializer.Serialize(new Dictionary<string, string>(section.Metadata)
                     {
                         ["RecordType"] = "ExcelRows"
                     })
@@ -314,11 +298,15 @@ public class DocumentIngestionService
         return chunks;
     }
 
-    private static DocumentChunk BuildExcelChunk(
-        Guid documentId,
-        string ns,
-        int chunkIndex,
-        DocumentSection section)
+    /// <summary>
+    /// To build excel chunk
+    /// </summary>
+    /// <param name="documentId"></param>
+    /// <param name="ns"></param>
+    /// <param name="chunkIndex"></param>
+    /// <param name="section"></param>
+    /// <returns></returns>
+    private static DocumentChunk BuildExcelChunk(Guid documentId, string ns, int chunkIndex, DocumentSection section)
     {
         var metadata = new Dictionary<string, string>(section.Metadata)
         {
@@ -335,7 +323,7 @@ public class DocumentIngestionService
             SectionTitle = section.Heading,
             SourceLocation = section.SourceLocation,
             Namespace = ns,
-            MetadataJson = System.Text.Json.JsonSerializer.Serialize(metadata)
+            MetadataJson = JsonSerializer.Serialize(metadata)
         };
     }
 

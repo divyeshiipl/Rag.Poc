@@ -1,7 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.ViewModels;
-
-namespace Rag.Poc.Controllers;
+﻿namespace Rag.Poc.Controllers;
 
 public class UiController : Controller
 {

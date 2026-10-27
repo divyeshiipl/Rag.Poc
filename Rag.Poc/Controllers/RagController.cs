@@ -8,10 +8,7 @@ public class RagController : ControllerBase
     private readonly DocumentSearchService _searchService;
     private readonly IRetrievalPlanner _retrievalPlanner;
 
-    public RagController(
-        RagAnswerService ragAnswerService,
-        DocumentSearchService searchService,
-        IRetrievalPlanner retrievalPlanner)
+    public RagController(RagAnswerService ragAnswerService, DocumentSearchService searchService, IRetrievalPlanner retrievalPlanner)
     {
         _ragAnswerService = ragAnswerService;
         _searchService = searchService;
@@ -27,11 +24,7 @@ public class RagController : ControllerBase
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
     [HttpGet]
-    public async Task<IActionResult> Ask(
-       [FromQuery] string question,
-       [FromQuery] int? topK = null,
-       [FromQuery] string? ns = null,
-       CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Ask([FromQuery] string question, [FromQuery] int? topK = null, [FromQuery] string? ns = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
             return BadRequest(new { error = "Question cannot be empty." });
@@ -80,8 +73,7 @@ public class RagController : ControllerBase
                 ? plan.Namespaces.ToList()
                 : new List<string> { "default" };
 
-        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive
-                        && plan.Filters is { Count: > 0 })
+        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 })
                 ? new List<string> { Namespaces.Structural }
                 : effectiveNamespaces;
 
@@ -92,12 +84,7 @@ public class RagController : ControllerBase
         {
             foreach (var nsName in namespacesToQuery)
             {
-                var hits = await _searchService.SearchAsync(
-                    plan with { Namespaces = new List<string> { nsName } },
-                    effectiveTopK,
-                    nsName,
-                    cancellationToken);
-
+                var hits = await _searchService.SearchAsync(plan with { Namespaces = new List<string> { nsName } }, effectiveTopK, nsName, cancellationToken);
                 chunks.AddRange(hits);
             }
         }
@@ -107,18 +94,17 @@ public class RagController : ControllerBase
         }
         retrieval.Stop();
 
-        var isFiltered = plan.Mode == RetrievalMode.Exhaustive
-                         && plan.Filters is { Count: > 0 };
+        var isFiltered = plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 };
         var isFullTable = plan.Mode == RetrievalMode.FullTable;
         var isAggregate = plan.Mode == RetrievalMode.Aggregate;
 
-        var minScore = isFiltered || isFullTable || isAggregate
-            ? 0.0
-            : (plan.MinScore ?? 0.15);
+        var minScore = isFiltered || isFullTable || isAggregate ? 0.0 : (plan.MinScore ?? 0.15);
 
         var deduped = chunks
             .Where(c => c.Score >= minScore)
-            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex, c.Chunk.Namespace))
+            .GroupBy(c => IsExcelChunk(c.Chunk)
+                ? $"excel|{c.Chunk.Id}|{c.Source}"
+                : $"prose|{c.Chunk.DocumentId}|{c.Chunk.ChunkIndex}|{c.Chunk.Namespace}")
             .Select(g => g.OrderByDescending(c => c.Score).First())
             .OrderByDescending(c => c.Score)
             .ToList();
@@ -152,25 +138,15 @@ public class RagController : ControllerBase
                 .Select(x => x.Chunk)
                 .ToList();
 
-            var isFilteredQuery = plan.Mode == RetrievalMode.Exhaustive
-                                  && plan.Filters is { Count: > 0 };
+            var isFilteredQuery = plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 };
 
-            if (isFilteredQuery && chunksForLlm.Count == 1
-                && chunksForLlm[0].Content?.Contains("VERIFIED MATCHING ROWS") == true)
+            if (isFilteredQuery && chunksForLlm.Count == 1 && chunksForLlm[0].Content?.Contains("VERIFIED MATCHING ROWS") == true)
             {
-                answer = await GenerateBatchedFilteredAnswerAsync(
-                    question,
-                    chunksForLlm[0],
-                    plan.Filters,
-                    cancellationToken);
+                answer = await GenerateBatchedFilteredAnswerAsync(question, chunksForLlm[0], plan.Filters, cancellationToken);
             }
             else
             {
-                answer = await _ragAnswerService.AnswerFromChunksAsync(
-                    question,
-                    chunksForLlm,
-                    plan.Filters,
-                    cancellationToken);
+                answer = await _ragAnswerService.AnswerFromChunksAsync(question, chunksForLlm, plan.Filters, cancellationToken);
             }
         }
         catch (OperationCanceledException)
@@ -217,12 +193,7 @@ public class RagController : ControllerBase
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
     [HttpGet("inspect")]
-    public async Task<IActionResult> InspectRetrieval(
-        [FromQuery] string question,
-        [FromQuery] int topK = 10,
-        [FromQuery] string? ns = null,
-        [FromQuery] bool hybrid = true,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> InspectRetrieval([FromQuery] string question, [FromQuery] int topK = 10, [FromQuery] string? ns = null, [FromQuery] bool hybrid = true, CancellationToken cancellationToken = default)
     {
         var chunks = await _searchService.SearchDetailedAsync(new RetrievalOptions
         {
@@ -257,11 +228,15 @@ public class RagController : ControllerBase
 
     #region Private Methods
 
-    private async Task<string> GenerateBatchedFilteredAnswerAsync(
-    string question,
-    DocumentChunk filteredChunk,
-    IReadOnlyList<QueryFilter>? filters,
-    CancellationToken cancellationToken)
+    /// <summary>
+    /// To generate the batched filtered answers
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="filteredChunk"></param>
+    /// <param name="filters"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private async Task<string> GenerateBatchedFilteredAnswerAsync(string question, DocumentChunk filteredChunk, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken)
     {
         const int MaxRowsPerBatch = 8;
 
@@ -282,8 +257,7 @@ public class RagController : ControllerBase
 
         if (rowLines.Count <= MaxRowsPerBatch)
         {
-            return await _ragAnswerService.AnswerFromChunksAsync(
-                question, new[] { filteredChunk }, filters, cancellationToken);
+            return await _ragAnswerService.AnswerFromChunksAsync(question, new[] { filteredChunk }, filters, cancellationToken);
         }
 
         var batches = new List<List<string>>();
@@ -343,6 +317,11 @@ public class RagController : ControllerBase
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// To extract the row lines
+    /// </summary>
+    /// <param name="answer"></param>
+    /// <returns></returns>
     private static List<string> ExtractRowLines(string answer)
     {
         var rows = new List<string>();
@@ -366,6 +345,11 @@ public class RagController : ControllerBase
         return rows;
     }
 
+    /// <summary>
+    /// To extract the row number
+    /// </summary>
+    /// <param name="rowLine"></param>
+    /// <returns></returns>
     private static int ExtractRowNumber(string rowLine)
     {
         if (string.IsNullOrWhiteSpace(rowLine)) return -1;
@@ -375,5 +359,20 @@ public class RagController : ControllerBase
         return int.TryParse(numPart, out var n) ? n : -1;
     }
 
+    /// <summary>
+    /// To check if chunks are excel chunks or not
+    /// </summary>
+    /// <param name="chunk"></param>
+    /// <returns></returns>
+    private static bool IsExcelChunk(DocumentChunk chunk)
+    {
+        if (chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        if (chunk.MetadataJson?.Contains("\"RecordType\":\"Excel", StringComparison.Ordinal) == true)
+            return true;
+
+        return false;
+    }
     #endregion
 }

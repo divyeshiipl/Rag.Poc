@@ -26,7 +26,6 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
             throw new FileNotFoundException("BGE-small vocabulary was not found.", options.VocabularyPath);
 
         _session = new InferenceSession(options.ModelPath);
-
         _tokenizer = BertTokenizer.Create(options.VocabularyPath);
     }
 
@@ -61,6 +60,7 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     #endregion
 
     #region Private Methods
+
     /// <summary>
     /// Generates an embedding for the given text.
     /// </summary>
@@ -84,24 +84,21 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
         if (tokenIds.Count > _options.MaxTokens)
             tokenIds = tokenIds.Take(_options.MaxTokens).ToList();
 
-        var inputIds =
-            new DenseTensor<long>(
+        var inputIds = new DenseTensor<long>(
                 new[]
                 {
                     1,
                     tokenIds.Count
                 });
 
-        var attentionMask =
-            new DenseTensor<long>(
+        var attentionMask = new DenseTensor<long>(
                 new[]
                 {
                     1,
                     tokenIds.Count
                 });
 
-        var tokenTypeIds =
-            new DenseTensor<long>(
+        var tokenTypeIds = new DenseTensor<long>(
                 new[]
                 {
                     1,
@@ -115,12 +112,11 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
             tokenTypeIds[0, i] = 0;
         }
 
-        var inputs =
-            new[]
+        var inputs = new[]
             {
-                NamedOnnxValue.CreateFromTensor(                    "input_ids",                    inputIds),
-                NamedOnnxValue.CreateFromTensor(                    "attention_mask",                    attentionMask),
-                NamedOnnxValue.CreateFromTensor(                    "token_type_ids",                    tokenTypeIds)
+                NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
+                NamedOnnxValue.CreateFromTensor("attention_mask", attentionMask),
+                NamedOnnxValue.CreateFromTensor("token_type_ids", tokenTypeIds)
             };
 
         using var results = _session.Run(inputs);
@@ -144,6 +140,11 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
         return Task.FromResult(embedding);
     }
 
+    /// <summary>
+    /// To normalize the emdbeddings
+    /// </summary>
+    /// <param name="embedding"></param>
+    /// <exception cref="InvalidOperationException"></exception>
     private static void Normalize(float[] embedding)
     {
         double sum = 0;
@@ -160,6 +161,9 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
             embedding[i] = (float)(embedding[i] / magnitude);
     }
 
+    /// <summary>
+    /// To dispose the session
+    /// </summary>
     public void Dispose()
     {
         _session.Dispose();

@@ -22,3 +22,5 @@ global using ExcelDataReader;
 global using System.Globalization;
 global using NpgsqlTypes;
 global using System.Security.Cryptography;
+global using Rag.Poc.ViewModels;
+

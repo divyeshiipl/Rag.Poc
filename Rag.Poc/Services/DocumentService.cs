@@ -16,9 +16,7 @@ public class DocumentService
     /// <param name="projectId"></param>
     /// <param name="filePath"></param>
     /// <returns></returns>
-    public async Task<Models.Document> GetOrCreateAsync(
-        Guid projectId,
-        string filePath)
+    public async Task<Models.Document> GetOrCreateAsync(Guid projectId, string filePath)
     {
         var existing = await _db.Documents
             .FirstOrDefaultAsync(x =>
@@ -63,28 +61,32 @@ public class DocumentService
     #endregion
 
     #region Private Methods
-    private static async Task<string> CalculateHashAsync(
-        string filePath)
+
+    /// <summary>
+    /// To calculate the hash for the doc files
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <returns></returns>
+    private static async Task<string> CalculateHashAsync(string filePath)
     {
-        await using var stream =
-            File.OpenRead(filePath);
-
+        await using var stream = File.OpenRead(filePath);
         var hash = await SHA256.HashDataAsync(stream);
-
         return Convert.ToHexString(hash);
     }
 
-    private static string GetContentType(
-        string filePath)
+    /// <summary>
+    /// To get content type
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <returns></returns>
+    private static string GetContentType(string filePath)
     {
         return Path.GetExtension(filePath)
             .ToLowerInvariant() switch
         {
             ".pdf" => "application/pdf",
-            ".docx" =>
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx" =>
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ".txt" => "text/plain",
             ".html" => "text/html",
             ".htm" => "text/html",

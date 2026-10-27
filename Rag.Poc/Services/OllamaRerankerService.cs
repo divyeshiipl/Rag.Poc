@@ -10,9 +10,7 @@ public sealed class OllamaRerankerService : IRerankerService
     private readonly HttpClient _http;
     private readonly ILogger<OllamaRerankerService> _logger;
 
-    public OllamaRerankerService(
-        HttpClient http,
-        ILogger<OllamaRerankerService> logger)
+    public OllamaRerankerService(HttpClient http, ILogger<OllamaRerankerService> logger)
     {
         _http = http;
         _logger = logger;
@@ -28,11 +26,7 @@ public sealed class OllamaRerankerService : IRerankerService
     /// <param name="topN"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    public async Task<List<ScoredChunk>> RerankAsync(
-        string query,
-        List<ScoredChunk> candidates,
-        int topN,
-        CancellationToken cancellationToken = default)
+    public async Task<List<ScoredChunk>> RerankAsync(string query, List<ScoredChunk> candidates, int topN, CancellationToken cancellationToken = default)
     {
         if (candidates.Count <= 1)
             return candidates.Take(topN).ToList();
@@ -70,25 +64,19 @@ public sealed class OllamaRerankerService : IRerankerService
 
         try
         {
-            using var resp = await _http.PostAsJsonAsync(
-                "/api/generate", request, cancellationToken);
-
+            using var resp = await _http.PostAsJsonAsync("/api/generate", request, cancellationToken);
             resp.EnsureSuccessStatusCode();
 
-            var doc = await resp.Content.ReadFromJsonAsync<JsonElement>(
-                cancellationToken);
+            var doc = await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
 
             var raw = doc.TryGetProperty("response", out var respProp)
                 ? respProp.GetString() ?? "[]"
                 : "[]";
 
             var scores = ParseScoreArray(raw);
-
             if (scores.Count != candidates.Count)
             {
-                _logger.LogWarning(
-                    "Reranker returned {Returned} scores for {Expected} passages; falling back to original order.",
-                    scores.Count, candidates.Count);
+                _logger.LogWarning("Reranker returned {Returned} scores for {Expected} passages; falling back to original order.", scores.Count, candidates.Count);
                 return candidates.Take(topN).ToList();
             }
 
@@ -105,8 +93,7 @@ public sealed class OllamaRerankerService : IRerankerService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
-                "Reranker call failed; using unranked order.");
+            _logger.LogWarning(ex, "Reranker call failed; using unranked order.");
             return candidates.Take(topN).ToList();
         }
     }
@@ -114,6 +101,12 @@ public sealed class OllamaRerankerService : IRerankerService
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// To parse the score array
+    /// </summary>
+    /// <param name="raw"></param>
+    /// <returns></returns>
     private static List<double> ParseScoreArray(string raw)
     {
         var start = raw.IndexOf('[');
@@ -122,9 +115,7 @@ public sealed class OllamaRerankerService : IRerankerService
 
         try
         {
-            return JsonSerializer.Deserialize<List<double>>(
-                       raw[start..(end + 1)])
-                   ?? new List<double>();
+            return JsonSerializer.Deserialize<List<double>>(raw[start..(end + 1)]) ?? new List<double>();
         }
         catch
         {

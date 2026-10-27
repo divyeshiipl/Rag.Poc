@@ -18,9 +18,7 @@ public class IngestionController : ControllerBase
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
     [HttpPost("projects/{projectId:guid}")]
-    public async Task<IActionResult> ProcessProject(
-        Guid projectId,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> ProcessProject(Guid projectId, CancellationToken cancellationToken = default)
     {
         var result = await _ingestionService.ProcessProjectAsync(projectId, cancellationToken);
         return Ok(result);
@@ -32,11 +30,9 @@ public class IngestionController : ControllerBase
     /// <param name="projectId"></param>
     /// <returns></returns>
     [HttpPost("projects/{projectId:guid}/rechunk")]
-    public async Task<IActionResult> RechunkProject(
-        Guid projectId)
+    public async Task<IActionResult> RechunkProject(Guid projectId)
     {
-        var processed = await _ingestionService.RechunkProjectAsync(
-            projectId);
+        var processed = await _ingestionService.RechunkProjectAsync(projectId);
 
         return Ok(new { projectId, processedDocuments = processed });
     }

@@ -29,17 +29,12 @@ public sealed class RagAnswerService
     /// <param name="filters"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    public async Task<string> AnswerFromChunksAsync(
-        string question,
-        IReadOnlyList<DocumentChunk> chunks,
-        IReadOnlyList<QueryFilter>? filters,
-        CancellationToken cancellationToken = default)
+    public async Task<string> AnswerFromChunksAsync(string question, IReadOnlyList<DocumentChunk> chunks, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken = default)
     {
         if (chunks.Count == 0)
             return "I couldn't find relevant information in our company documents.";
 
-        return await _languageModelService.GenerateAnswerAsync(
-            question, chunks, filters, cancellationToken);
+        return await _languageModelService.GenerateAnswerAsync(question, chunks, filters, cancellationToken);
     }
 
     #endregion

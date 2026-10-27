@@ -16,13 +16,7 @@ public class DocumentChunker
     /// <returns></returns>
     /// <exception cref="ArgumentOutOfRangeException"></exception>
     /// <exception cref="ArgumentException"></exception>
-    public List<DocumentChunk> Chunk(
-        Guid documentId,
-        ExtractedDocument document,
-        int chunkSize = 600,
-        int overlap = 100,
-        int minChunkChars = 150,
-        string ns = "default")
+    public List<DocumentChunk> Chunk(Guid documentId, ExtractedDocument document, int chunkSize = 600, int overlap = 100, int minChunkChars = 150, string ns = "default")
     {
         if (chunkSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(chunkSize));
@@ -38,8 +32,7 @@ public class DocumentChunker
 
         foreach (var section in document.Sections)
         {
-            var sectionChunks = ChunkSection(
-                documentId, section, chunkSize, overlap, minChunkChars, ns, ref chunkIndex);
+            var sectionChunks = ChunkSection(documentId, section, chunkSize, overlap, minChunkChars, ns, ref chunkIndex);
             chunks.AddRange(sectionChunks);
         }
 
@@ -49,14 +42,19 @@ public class DocumentChunker
     #endregion
 
     #region Private Methods
-    private static List<DocumentChunk> ChunkSection(
-        Guid documentId,
-        DocumentSection section,
-        int chunkSize,
-        int overlap,
-        int minChunkChars,
-        string ns,
-        ref int chunkIndex)
+
+    /// <summary>
+    /// To Create the chunk sections
+    /// </summary>
+    /// <param name="documentId"></param>
+    /// <param name="section"></param>
+    /// <param name="chunkSize"></param>
+    /// <param name="overlap"></param>
+    /// <param name="minChunkChars"></param>
+    /// <param name="ns"></param>
+    /// <param name="chunkIndex"></param>
+    /// <returns></returns>
+    private static List<DocumentChunk> ChunkSection(Guid documentId, DocumentSection section, int chunkSize, int overlap, int minChunkChars, string ns, ref int chunkIndex)
     {
         var chunks = new List<DocumentChunk>();
 
@@ -73,8 +71,7 @@ public class DocumentChunker
         {
             if (block.Length > chunkSize)
             {
-                FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-                    minChunkChars, ns, ref currentLength, ref chunkIndex);
+                FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
                 var smallerBlocks = SplitLargeBlock(block, chunkSize);
                 foreach (var smallerBlock in smallerBlocks)
@@ -84,15 +81,12 @@ public class DocumentChunker
                 continue;
             }
 
-            var additionalLength = currentBlocks.Count == 0
-                ? block.Length
-                : block.Length + 2;
+            var additionalLength = currentBlocks.Count == 0 ? block.Length : block.Length + 2;
 
             if (currentLength + additionalLength > chunkSize)
             {
                 var overlapBlocks = GetOverlapBlocks(currentBlocks, overlap);
-                FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-                    minChunkChars, ns, ref currentLength, ref chunkIndex);
+                FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
                 currentBlocks = overlapBlocks;
                 currentLength = CalculateLength(currentBlocks);
@@ -108,12 +102,16 @@ public class DocumentChunker
             currentLength = CalculateLength(currentBlocks);
         }
 
-        FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-            minChunkChars, ns, ref currentLength, ref chunkIndex);
+        FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
         return chunks;
     }
 
+    /// <summary>
+    /// To build the sections text
+    /// </summary>
+    /// <param name="section"></param>
+    /// <returns></returns>
     private static string BuildSectionText(DocumentSection section)
     {
         var heading = section.Heading?.Trim();
@@ -125,6 +123,11 @@ public class DocumentChunker
         return $"{heading}\n\n{content}";
     }
 
+    /// <summary>
+    /// To split into the logical blocks
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
     private static List<string> SplitIntoLogicalBlocks(string text)
     {
         var paragraphs = Regex
@@ -148,9 +151,18 @@ public class DocumentChunker
         return result;
     }
 
-    private static bool ContainsNumberedList(string text)
-        => Regex.IsMatch(text, @"(?m)^\d+[\.\)]\s+");
+    /// <summary>
+    /// Checks if text contains numbered list
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    private static bool ContainsNumberedList(string text) => Regex.IsMatch(text, @"(?m)^\d+[\.\)]\s+");
 
+    /// <summary>
+    /// To split the text into sentences
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
     private static List<string> SplitSentences(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
@@ -162,6 +174,12 @@ public class DocumentChunker
             .ToList();
     }
 
+    /// <summary>
+    /// To split the large blocks
+    /// </summary>
+    /// <param name="block"></param>
+    /// <param name="chunkSize"></param>
+    /// <returns></returns>
     private static List<string> SplitLargeBlock(string block, int chunkSize)
     {
         var words = block.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -187,6 +205,12 @@ public class DocumentChunker
         return chunks;
     }
 
+    /// <summary>
+    /// To get the overlap blocks
+    /// </summary>
+    /// <param name="blocks"></param>
+    /// <param name="overlap"></param>
+    /// <returns></returns>
     private static List<string> GetOverlapBlocks(List<string> blocks, int overlap)
     {
         if (blocks.Count == 0 || overlap <= 0) return [];
@@ -206,15 +230,18 @@ public class DocumentChunker
         return result;
     }
 
-    private static void FlushCurrentChunk(
-        List<DocumentChunk> chunks,
-        Guid documentId,
-        DocumentSection section,
-        List<string> blocks,
-        int minChunkChars,
-        string ns,
-        ref int currentLength,
-        ref int chunkIndex)
+    /// <summary>
+    /// To flush the current blocks
+    /// </summary>
+    /// <param name="chunks"></param>
+    /// <param name="documentId"></param>
+    /// <param name="section"></param>
+    /// <param name="blocks"></param>
+    /// <param name="minChunkChars"></param>
+    /// <param name="ns"></param>
+    /// <param name="currentLength"></param>
+    /// <param name="chunkIndex"></param>
+    private static void FlushCurrentChunk(List<DocumentChunk> chunks, Guid documentId, DocumentSection section, List<string> blocks, int minChunkChars, string ns, ref int currentLength, ref int chunkIndex)
     {
         if (blocks.Count == 0)
         {
@@ -237,18 +264,27 @@ public class DocumentChunker
         currentLength = 0;
     }
 
+    /// <summary>
+    /// To calculate the lenghth of the blocks
+    /// </summary>
+    /// <param name="blocks"></param>
+    /// <returns></returns>
     private static int CalculateLength(List<string> blocks)
     {
         if (blocks.Count == 0) return 0;
         return blocks.Sum(x => x.Length) + ((blocks.Count - 1) * 2);
     }
 
-    private static DocumentChunk CreateChunk(
-        Guid documentId,
-        DocumentSection section,
-        string content,
-        string ns,
-        int chunkIndex)
+    /// <summary>
+    /// To create the chunks of the document
+    /// </summary>
+    /// <param name="documentId"></param>
+    /// <param name="section"></param>
+    /// <param name="content"></param>
+    /// <param name="ns"></param>
+    /// <param name="chunkIndex"></param>
+    /// <returns></returns>
+    private static DocumentChunk CreateChunk(Guid documentId, DocumentSection section, string content, string ns, int chunkIndex)
     {
         return new DocumentChunk
         {
@@ -260,12 +296,15 @@ public class DocumentChunker
             SectionTitle = section.Heading,
             SourceLocation = section.SourceLocation,
             Namespace = ns,
-            MetadataJson = section.Metadata.Count == 0
-                ? null
-                : JsonSerializer.Serialize(section.Metadata)
+            MetadataJson = section.Metadata.Count == 0 ? null : JsonSerializer.Serialize(section.Metadata)
         };
     }
 
+    /// <summary>
+    /// To estimate the token count of the text
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
     private static int EstimateTokenCount(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return 0;

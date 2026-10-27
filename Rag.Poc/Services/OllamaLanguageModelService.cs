@@ -20,35 +20,37 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
     /// <exception cref="InvalidOperationException"></exception>
-    public async Task<string> GenerateAnswerAsync(
-    string question,
-    IReadOnlyList<DocumentChunk> chunks,
-    IReadOnlyList<QueryFilter>? filters,
-    CancellationToken cancellationToken = default)
+    public async Task<string> GenerateAnswerAsync(string question, IReadOnlyList<DocumentChunk> chunks, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken = default)
     {
         var context = BuildContext(chunks);
         var filterSection = BuildFilterSection(filters);
 
         var prompt = $"""
-        You are an AI assistant answering questions about internal company documents.
+            You are an AI assistant answering questions about internal company documents.
 
-        Answer using ONLY the provided context. Do not use outside knowledge.
-        Do not invent facts.
+            Answer using ONLY the provided context. Do not use outside knowledge.
+            Do not invent facts.
 
-        If the context does not contain enough information, say exactly:
-        "The available documents do not provide enough information to answer this question."
+            {filterSection}
 
-        {filterSection}
+            CONTEXT RULES:
+            - Read EVERY [Source N] block before answering.
+            - If two blocks answer different parts of the question, combine them.
+            - If a question asks "what are the N things" or "list all X", check EVERY
+              block for additional items. Do not stop at the first block that has an
+              answer.
+            - If the context does not contain enough information, say exactly:
+              "The available documents do not provide enough information to answer this question."
 
-        CONTEXT:
-        {context}
+            CONTEXT:
+            {context}
 
-        USER QUESTION:
-        {question}
+            USER QUESTION:
+            {question}
 
-        ANSWER:
-        /no_think
-        """;
+            ANSWER:
+            /no_think
+            """;
 
         var request = new
         {
@@ -67,12 +69,10 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             }
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            "/api/generate", request, cancellationToken);
+        using var response = await _httpClient.PostAsJsonAsync("/api/generate", request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(
-            cancellationToken: cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(cancellationToken: cancellationToken);
 
         if (string.IsNullOrWhiteSpace(result?.Response))
             throw new InvalidOperationException("Ollama returned an empty response.");
@@ -83,13 +83,18 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// To build the filter section
+    /// </summary>
+    /// <param name="filters"></param>
+    /// <returns></returns>
     private static string BuildFilterSection(IReadOnlyList<QueryFilter>? filters)
     {
         if (filters is not { Count: > 0 })
             return string.Empty;
 
-        var filterDesc = string.Join(" AND ", filters.Select(f =>
-            f.Operator == "between"
+        var filterDesc = string.Join(" AND ", filters.Select(f => f.Operator == "between"
                 ? $"{f.Column} between \"{f.Value}\" and \"{f.UpperBound}\""
                 : $"{f.Column} {f.Operator} \"{f.Value}\""));
 
@@ -113,6 +118,11 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         """;
     }
 
+    /// <summary>
+    /// To build context from chunks
+    /// </summary>
+    /// <param name="chunks"></param>
+    /// <returns></returns>
     private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
     {
         var sb = new StringBuilder();
@@ -123,8 +133,7 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             if (sb.Length >= RagConstants.MaxTotalContextChars) break;
 
             var content = chunk.Content ?? string.Empty;
-            var isExcel = chunk.SourceLocation?.StartsWith(
-                "Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
+            var isExcel = chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
             var cap = isExcel ? 2_000 : RagConstants.MaxCharsPerChunk;
             if (content.Length > cap) content = content[..cap];
 
