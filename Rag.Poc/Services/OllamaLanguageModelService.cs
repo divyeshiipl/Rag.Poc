@@ -47,48 +47,35 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
              Answer the QUESTION using only the factual evidence in the CONTEXT.
                  
              Rules:
-             1. Read all context sections before answering.
-             2. Determine which context sections are relevant to the question.
-             3. Treat source document names, version numbers, and content as evidence
-                for identifying the relevant information.
-             4. Do not assume information is missing merely because the question
-                uses different wording from the source.
-             5. Combine all relevant facts from the context into one concise answer.
-             6. Do not use unrelated documents to contradict relevant evidence.
-             7. Do not invent facts or use outside knowledge.
-             8. If the context supports only part of the answer, provide that part.
-             9. State that the available documents do not provide enough information
-                only when the context contains no evidence that answers the question.
-             10. Do not mention these rules.
-             11. Read tables as structured data and preserve each row's category-to-value relationship.
-             12. Do not infer or invent requirements, targets, metrics, thresholds, or numerical values. Report only values explicitly supported by the provided context. If the question asks for target performance requirements, look specifically for documented response-time targets for login, asset search, dashboard, and report generation. Do not substitute development quality metrics or invent throughput, error-rate, or database-latency targets. If the relevant targets are not present in the context, respond exactly: "Not found in the provided documentation."
-             13. Do not assign values from other categories to the requested category, even if those values appear in the same table or document.
-             14. When multiple categories are requested, answer each category separately using its corresponding source values.
-             15. Include all relevant values explicitly listed for each requested category. Do not omit supported values or add unsupported ones.
-             16. Treat table headers and row labels as authoritative when determining which values belong to each category.
-             17. Do not interpret every technology mentioned in a document as belonging to the Backend category.
-             18. If different sections use different classifications, preserve each section's original classification instead of merging the categories.
-             19. When multiple documents provide relevant evidence, combine compatible facts without changing their original meaning or category assignments.
-             20. If the retrieved context does not contain enough evidence to establish a requested category's values, state that the available context is insufficient for that part of the answer.
-             21. Keep the answer focused on the requested categories and do not add unrelated technologies.
-             22. Identify which retrieved document most directly answers the user's question before composing the answer.
-             23. Prefer direct, question-relevant evidence over information that is merely related to the same topic.
-             24. Do not merge separate lists from different documents unless the question explicitly requests a combined or comprehensive list.
-             25. Include a detail only when it directly answers the question or is necessary to understand the answer.
-             26. If one retrieved source directly answers the question, use that source as the primary evidence. Do not add unrelated lists from other sources.
-             27. Never claim that the answer is comprehensive unless the source explicitly establishes that it is.
-             28. Do not add an insufficient-information disclaimer when the available evidence answers the question.
-             29. When a question asks for a specific technology, identify the exact technology value explicitly mapped to the requested category in the context.
-             30. For authentication technology questions, do not substitute general authentication methods, authorization concepts, user roles, browser access, or session handling for an explicitly listed authentication technology.
-             31. For logging technology questions, return the technologies explicitly mapped to the Logging layer or category. Do not substitute audit activities, logged events, monitoring capabilities, session timeout, or database logs.
-             32. When the context contains a direct table row matching the requested category, prioritize that row over general descriptions or related information from other sections.
-             33. Preserve the exact technology names and values as written in the source, including names containing multiple components separated by a slash.
-             34. Do not infer a technology value from the system's features or functionality when an explicit value is available in the context.
-             35. Before finalizing the answer, verify that each returned value is explicitly supported by the context and mapped to the category asked about.
-             36. If an explicit matching category-to-value mapping exists in the context, answer with that value directly without an insufficient-information disclaimer.
-             37. Do not include alternative technologies, examples, assumptions, or explanations unless they are explicitly supported by relevant context and necessary to answer the question.
-             38. For database relationship questions, identify the primary key, foreign key, and referenced table exactly as described in the source. Do not reverse the relationship or confuse a record's identifier with the foreign key referencing another entity.
-             39. Do not infer or invent numerical targets, performance benchmarks, throughput, error rates, or database response times. Use only explicitly stated evidence from the provided context. For performance questions, report each documented operation and its exact response-time target. Do not substitute bug ratios, implementation accuracy, or testing metrics for system response-time requirements. If the context does not contain the requested targets, respond exactly: "Not found in the provided documentation."
+                1. Answer using only factual evidence in the CONTEXT.
+                2. Read all context sections and identify the source most directly relevant to the question.
+                3. Prefer explicit statements and table mappings over assumptions or general descriptions.
+                4. Preserve table headers, category-to-value relationships, and exact source terminology.
+                5. For a technology stack question, return the technologies and categories explicitly listed in the relevant technology stack table.
+                6. For a specific architecture layer, return only technologies explicitly associated with that layer.
+                7. Never infer technologies, frameworks, programming languages, cloud platforms, or numerical values.
+                8. Combine relevant chunks when necessary to answer the question completely, but exclude unrelated information.
+                9. If the context does not support the requested answer, respond exactly: "Not found in the provided documentation."
+                10. Keep the answer concise and directly address the question.
+                11. Do not combine facts from unrelated sections merely because they share keywords.
+                12. Preserve the source document's explicit labels and their associated values.
+                13. For questions asking to list multiple items, stages, requirements, features, or durations:
+                    - Include all relevant items explicitly supported by the provided context.
+                    - Review all relevant context before answering; do not stop after finding only a partial answer.
+                    - Preserve each item's original label and its associated value.
+                    - Combine relevant chunks when necessary, without mixing unrelated facts.
+                    - Ensure all requested categories are covered using relevant evidence from the CONTEXT, including information from different documents when necessary.
+                    - Include all requested categories, such as performance limits and capacity limits, when supported by the context.
+                    - Do not invent, assume, or infer missing items or values.
+                    - If only partial information is available, provide the supported items and clearly state that the remaining information was not found.
+                14. For questions about the history, records, or transactions of a specific entity:
+                     - Identify the exact entity using its name, ID, or identifier.
+                     - Retrieve and combine all relevant records associated with that entity from the provided context.
+                     - Include every supported record and preserve its date, type, cost, and other associated values.
+                     - Do not treat missing records in one chunk as proof that no records exist in the remaining context.
+                     - If no relevant records are present in the context, respond exactly: "Not found in the provided documentation."
+
+
          
              CONTEXT:
              <context>

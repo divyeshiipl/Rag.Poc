@@ -9,15 +9,18 @@ public sealed class RagAnswerService
 
     private readonly ILanguageModelService _languageModelService;
 
+    private readonly ILogger<RagAnswerService> _logger;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="RagAnswerService"/> class.
     /// </summary>
     /// <param name="searchService"></param>
     /// <param name="languageModelService"></param>
-    public RagAnswerService(DocumentSearchService searchService, ILanguageModelService languageModelService)
+    public RagAnswerService(DocumentSearchService searchService, ILanguageModelService languageModelService, ILogger<RagAnswerService> logger)
     {
         _searchService = searchService;
         _languageModelService = languageModelService;
+        _logger = logger;
     }
 
     /// <summary>
@@ -44,6 +47,16 @@ public sealed class RagAnswerService
         var contextCount = isBroadQuestion ? Math.Clamp(topK * 2, 10, 20) : Math.Clamp(topK, 3, 8);
 
         var chunks = await _searchService.SearchAsync(question, contextCount, cancellationToken);
+
+        foreach (var chunk in chunks)
+        {
+            _logger.LogInformation(
+                "Retrieved chunk: DocumentId={DocumentId}, ChunkIndex={ChunkIndex}, SectionTitle={SectionTitle}, Content={Content}",
+                chunk.DocumentId,
+                chunk.ChunkIndex,
+                chunk.SectionTitle,
+                chunk.Content);
+        }
 
         if (chunks.Count == 0)
             return "I could not find relevant information in the provided documents.";

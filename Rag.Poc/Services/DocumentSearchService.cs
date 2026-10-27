@@ -117,7 +117,7 @@ public sealed class DocumentSearchService
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
 
         var queryVector = new Vector(embedding);
-        var candidateCount = Math.Max(topK * 10, 50);
+        var candidateCount = Math.Max(topK * 20, 100);
 
         var semanticResults = await _db.DocumentChunks
             .AsNoTracking()
@@ -144,7 +144,34 @@ public sealed class DocumentSearchService
                 .ToListAsync(cancellationToken);
 
             keywordResults = keywordResults
-                .OrderByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
+                .OrderByDescending(x =>
+                    ScoreKeywordMatch(x, query, searchTerms) +
+                    ScoreAttributeEvidenceMatch(query, x))
+                .ThenBy(x => x.ChunkIndex)
+                .Take(candidateCount)
+                .ToList();
+        }
+
+
+        var versionMatch = Regex.Match(query, @"\b(?:v(?:ersion)?\s*)?(\d+(?:\.\d+)+)\b", RegexOptions.IgnoreCase);
+
+        var versionResults = new List<DocumentChunk>();
+
+        if (versionMatch.Success)
+        {
+            var version = versionMatch.Groups[1].Value;
+
+            versionResults = await _db.DocumentChunks
+                .AsNoTracking()
+                .Include(x => x.Document)
+                .Where(x =>
+                    x.Document != null &&
+                    x.Document.FileName.ToLower().Contains(version.ToLower()))
+                .ToListAsync(cancellationToken);
+
+            versionResults = versionResults
+                .OrderByDescending(x =>
+                    ScoreKeywordMatch(x, query, searchTerms))
                 .ThenBy(x => x.ChunkIndex)
                 .Take(candidateCount)
                 .ToList();
@@ -157,6 +184,24 @@ public sealed class DocumentSearchService
 
         AddRankedResults(semanticResults, scores, chunks, rrfConstant, false, query, searchTerms);
         AddRankedResults(keywordResults, scores, chunks, rrfConstant, true, query, searchTerms);
+        AddRankedResults(versionResults, scores, chunks, rrfConstant, true, query, searchTerms);
+
+        foreach (var chunk in versionResults)
+        {
+            var key = $"{chunk.DocumentId}:{chunk.ChunkIndex}";
+            scores[key] += 0.05;
+        }
+
+        foreach (var pair in chunks)
+        {
+            scores[pair.Key] += ScoreEvidenceMatch(query, pair.Value) * 0.0001;
+            scores[pair.Key] += ScoreAttributeEvidenceMatch(query, pair.Value) * 0.001;
+        }
+
+        var exactStatusMatches = GetExactStatusTableMatches(query, chunks.Values);
+
+        if (exactStatusMatches.Count > 0)
+            return exactStatusMatches;
 
         var rankedChunks = chunks
             .OrderByDescending(x => scores[x.Key])
@@ -191,30 +236,45 @@ public sealed class DocumentSearchService
         if (isPerformanceQuestion)
             return rankedChunks;
 
-        return await ExpandWithNeighborsAsync(rankedChunks, cancellationToken);
+        var isRoleQuestion = Regex.IsMatch(query, @"\b(role|assigned|designation|team)\b", RegexOptions.IgnoreCase);
+        var isStatusQuestion = Regex.IsMatch(query, @"\b(status|state|approval|approved|pending)\b", RegexOptions.IgnoreCase);
+
+        if (isRoleQuestion ^ isStatusQuestion)
+        {
+            var exactAttributeMatches = chunks
+                .Where(x => ScoreAttributeEvidenceMatch(query, x.Value) >= 1000)
+                .OrderByDescending(x => scores[x.Key])
+                .Take(topK)
+                .Select(x => x.Value)
+                .ToList();
+
+            if (exactAttributeMatches.Count > 0)
+                return exactAttributeMatches;
+        }
+
+        return await ExpandWithNeighborsAsync(rankedChunks, query, cancellationToken);
     }
 
     /// <summary>
     /// Expands the ranked chunks with their neighboring chunks.
     /// </summary>
     /// <param name="rankedChunks"></param>
+    /// <param name="query"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    private async Task<List<DocumentChunk>> ExpandWithNeighborsAsync(IReadOnlyList<DocumentChunk> rankedChunks, CancellationToken cancellationToken)
+    private async Task<List<DocumentChunk>> ExpandWithNeighborsAsync(IReadOnlyList<DocumentChunk> rankedChunks, string query, CancellationToken cancellationToken)
     {
         if (rankedChunks.Count == 0)
             return new List<DocumentChunk>();
 
-        var result = new List<DocumentChunk>();
-        var addedKeys = new HashSet<string>();
+        var result = rankedChunks
+            .GroupBy(x => $"{x.DocumentId}:{x.ChunkIndex}")
+            .Select(x => x.First())
+            .ToList();
 
-        foreach (var chunk in rankedChunks)
-        {
-            var key = $"{chunk.DocumentId}:{chunk.ChunkIndex}";
-
-            if (addedKeys.Add(key))
-                result.Add(chunk);
-        }
+        var addedKeys = result
+            .Select(x => $"{x.DocumentId}:{x.ChunkIndex}")
+            .ToHashSet();
 
         foreach (var group in rankedChunks.GroupBy(x => x.DocumentId))
         {
@@ -235,27 +295,27 @@ public sealed class DocumentSearchService
                     indexes.Contains(x.ChunkIndex))
                 .ToListAsync(cancellationToken);
 
-            var neighborLookup = neighbors
-                .GroupBy(x => x.ChunkIndex)
-                .ToDictionary(x => x.Key, x => x.First());
-
-            foreach (var chunk in group)
+            foreach (var neighbor in neighbors)
             {
-                foreach (var index in new[]
-                {
-                chunk.ChunkIndex - 1,
-                chunk.ChunkIndex + 1
-            })
-                {
-                    if (index < 0 ||
-                        !neighborLookup.TryGetValue(index, out var neighbor))
-                        continue;
+                var key = $"{neighbor.DocumentId}:{neighbor.ChunkIndex}";
 
-                    var key = $"{neighbor.DocumentId}:{neighbor.ChunkIndex}";
+                if (addedKeys.Contains(key))
+                    continue;
 
-                    if (addedKeys.Add(key))
-                        result.Add(neighbor);
-                }
+                var relevant = ScoreEvidenceMatch(query, neighbor) > 0;
+
+                var sharesSection = group.Any(x =>
+                    !string.IsNullOrWhiteSpace(x.SectionTitle) &&
+                    string.Equals(
+                        x.SectionTitle,
+                        neighbor.SectionTitle,
+                        StringComparison.OrdinalIgnoreCase));
+
+                if (!relevant && !sharesSection)
+                    continue;
+
+                addedKeys.Add(key);
+                result.Add(neighbor);
             }
         }
 
@@ -362,6 +422,318 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
+    /// Scores the match between a query and a document chunk.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="chunk"></param>
+    /// <returns></returns>
+    private static int ScoreEvidenceMatch(string query, DocumentChunk chunk)
+    {
+        var queryTerms = TokenRegex.Matches(query)
+            .Select(x => x.Value.ToLowerInvariant())
+            .Where(x => x.Length > 2 && !StopWords.Contains(x))
+            .Distinct()
+            .ToArray();
+
+        if (queryTerms.Length == 0)
+            return 0;
+
+        var content = chunk.Content ?? string.Empty;
+        var section = chunk.SectionTitle ?? string.Empty;
+        var fileName = chunk.Document?.FileName ?? string.Empty;
+
+        var score = 0;
+
+        var queryVersion = Regex.Match(query, @"\b(?:v(?:ersion)?\s*)?(\d+(?:\.\d+)+)\b", RegexOptions.IgnoreCase);
+
+        if (queryVersion.Success)
+        {
+            var fileVersion = Regex.Match(fileName, @"\b(?:v(?:ersion)?\s*)?(\d+(?:\.\d+)+)\b", RegexOptions.IgnoreCase);
+            var hasFilenameRelevance = queryTerms.Any(term => fileName.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+            if (hasFilenameRelevance && fileVersion.Success &&
+                string.Equals(queryVersion.Groups[1].Value, fileVersion.Groups[1].Value, StringComparison.OrdinalIgnoreCase))
+                score += 40;
+        }
+
+        var sectionTerms = TokenRegex.Matches(section).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+        var fileTerms = TokenRegex.Matches(fileName).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+
+        score += queryTerms.Count(sectionTerms.Contains) * 5;
+        score += queryTerms.Count(fileTerms.Contains) * 4;
+
+        var contentTerms = TokenRegex.Matches(content).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+
+        score += queryTerms.Count(contentTerms.Contains) * 2;
+
+        var matchedQueryTerms = queryTerms.Count(contentTerms.Contains);
+        var coverage = (double)matchedQueryTerms / queryTerms.Length;
+
+        if (coverage >= 0.6)
+            score += 10;
+
+        if (!string.IsNullOrWhiteSpace(content) && content.Contains(query.Trim(), StringComparison.OrdinalIgnoreCase))
+            score += 20;
+
+        foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var lineTerms = TokenRegex.Matches(line).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+            var lineMatches = queryTerms.Count(lineTerms.Contains);
+
+            if (lineMatches >= 2)
+                score += lineMatches * 3;
+        }
+
+        return score;
+    }
+
+    /// <summary>
+    /// Scores the match between the query and the attribute evidence in the document chunk.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="chunk"></param>
+    /// <returns></returns>
+    private static int ScoreAttributeEvidenceMatch(string query, DocumentChunk chunk)
+    {
+        var content = chunk.Content ?? string.Empty;
+        var section = chunk.SectionTitle ?? string.Empty;
+
+        var isRoleQuestion = Regex.IsMatch(query, @"\b(role|assigned|designation|team)\b", RegexOptions.IgnoreCase);
+        var isStatusQuestion = Regex.IsMatch(query, @"\b(status|state|approval|approved|pending)\b", RegexOptions.IgnoreCase);
+
+        if (!isRoleQuestion && !isStatusQuestion)
+            return 0;
+
+        var ignoredTerms = new HashSet<string>(
+            StopWords.Concat(new[]
+            {
+                "role", "assigned", "designation", "team",
+                "status", "state", "approval", "approved", "pending",
+                "table"
+            }),
+            StringComparer.OrdinalIgnoreCase);
+
+        var entityTerms = TokenRegex.Matches(query)
+            .Select(x => x.Value.ToLowerInvariant())
+            .Where(x => x.Length > 2 && !ignoredTerms.Contains(x))
+            .Distinct().ToArray();
+
+        if (entityTerms.Length == 0)
+            return 0;
+
+        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        var expectedHeaders = isRoleQuestion
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "role", "designation", "team"
+            }
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "status", "approval"
+            };
+
+        var score = 0;
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var cells = lines[i].Split('|').Select(x => x.Trim()).ToArray();
+
+            if (cells.Length < 2)
+                continue;
+
+            var attributeIndex = Array.FindIndex(cells, expectedHeaders.Contains);
+
+            if (attributeIndex < 0)
+                continue;
+
+            for (var rowIndex = i + 1; rowIndex < lines.Length; rowIndex++)
+            {
+                var row = lines[rowIndex].Split('|').Select(x => x.Trim()).ToArray();
+
+                if (row.Length != cells.Length)
+                    break;
+
+                if (row.Any(expectedHeaders.Contains))
+                    break;
+
+                var entityMatches = row
+                    .Where((_, index) => index != attributeIndex)
+                    .Any(cell =>
+                    {
+                        var terms = TokenRegex.Matches(cell)
+                            .Select(x => x.Value.ToLowerInvariant())
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                        return entityTerms.All(terms.Contains);
+                    });
+
+                if (entityMatches && !string.IsNullOrWhiteSpace(row[attributeIndex]))
+                    return 1000;
+            }
+        }
+
+        var contentTerms = TokenRegex.Matches(content).Select(x => x.Value.ToLowerInvariant()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var entityMatchCount = entityTerms.Count(contentTerms.Contains);
+
+        if (entityMatchCount == 0)
+            return 0;
+
+        score += entityMatchCount * 2;
+
+        if (isRoleQuestion && Regex.IsMatch(content + " " + section, @"\b(role|attendee|team|designation|responsibility)\b", RegexOptions.IgnoreCase))
+            score += 5;
+
+        if (isStatusQuestion && Regex.IsMatch(content + " " + section, @"\b(approval|status|state)\b", RegexOptions.IgnoreCase))
+            score += 5;
+
+        return score;
+    }
+
+    /// <summary>
+    /// Gets the exact status table matches for the given query and candidates.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="candidates"></param>
+    /// <returns></returns>
+    private static List<DocumentChunk> GetExactStatusTableMatches(string query, IEnumerable<DocumentChunk> candidates)
+    {
+        if (!Regex.IsMatch(query, @"\b(roles?|status|approval)\b", RegexOptions.IgnoreCase))
+            return new List<DocumentChunk>();
+
+        var statusMatch = Regex.Match(query, @"\b(not\s+approved|in\s+progress|approved|pending|rejected|completed)\b", RegexOptions.IgnoreCase);
+
+        if (!statusMatch.Success)
+            return new List<DocumentChunk>();
+
+        var requestedStatus = Regex.Replace(statusMatch.Value, @"\s+", " ").Trim();
+        var results = new List<DocumentChunk>();
+
+        foreach (var chunk in candidates)
+        {
+            var lines = (chunk.Content ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim()).ToArray();
+
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var headers = lines[i].Split('|').Select(cell => cell.Trim()).ToArray();
+
+                var roleIndex = Array.FindIndex(headers, header => Regex.IsMatch(header, @"^(role|designation|team)$", RegexOptions.IgnoreCase));
+
+                var statusIndex = Array.FindIndex(headers, header => Regex.IsMatch(header, @"^(status|approval status)$", RegexOptions.IgnoreCase));
+
+                if (roleIndex < 0 || statusIndex < 0)
+                    continue;
+
+                var matchingRows = new List<string>();
+
+                for (var j = i + 1; j < lines.Length; j++)
+                {
+                    var cells = lines[j].Split('|').Select(cell => cell.Trim()).ToArray();
+
+                    if (cells.Length != headers.Length)
+                        break;
+
+                    if (cells.Any(cell => Regex.IsMatch(cell, @"^(role|designation|team|status|approval status)$", RegexOptions.IgnoreCase)))
+                        break;
+
+                    if (string.IsNullOrWhiteSpace(cells[roleIndex]) || string.IsNullOrWhiteSpace(cells[statusIndex]))
+                        continue;
+
+                    var rowStatus = Regex.Replace(cells[statusIndex], @"[*_`]", "").Trim();
+
+                    if (string.Equals(rowStatus, requestedStatus, StringComparison.OrdinalIgnoreCase))
+                        matchingRows.Add(lines[j]);
+                }
+
+                if (matchingRows.Count == 0)
+                    continue;
+
+                chunk.Content = string.Join(Environment.NewLine, new[] { lines[i] }.Concat(matchingRows));
+
+                results.Add(chunk);
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Scores a table row match based on the query and content.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static int ScoreTableRowMatch(string query, string content)
+    {
+        var queryTerms = TokenRegex.Matches(query)
+            .Select(x => x.Value.ToLowerInvariant())
+            .Where(x => x.Length > 2 && !StopWords.Contains(x))
+            .Distinct()
+            .ToArray();
+
+        if (queryTerms.Length == 0)
+            return 0;
+
+        var score = 0;
+
+        foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = line.Split('|', 2);
+
+            if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+                continue;
+
+            var labelTerms = TokenRegex.Matches(parts[0]).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+            var matchingTerms = queryTerms.Count(labelTerms.Contains);
+
+            if (matchingTerms == 0)
+                continue;
+
+            score += matchingTerms * 10;
+
+            if (queryTerms.All(labelTerms.Contains))
+                score += 15;
+        }
+
+        return score;
+    }
+
+    /// <summary>
+    /// Scores a phrase match based on the query and content.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static int ScorePhraseMatch(string query, string content)
+    {
+        var queryTerms = TokenRegex.Matches(query)
+            .Select(m => m.Value.ToLowerInvariant())
+            .Where(t => t.Length > 2 && !StopWords.Contains(t))
+            .ToArray();
+
+        var contentTerms = TokenRegex.Matches(content)
+            .Select(m => m.Value.ToLowerInvariant())
+            .ToArray();
+
+        if (queryTerms.Length < 2 || contentTerms.Length < 2)
+            return 0;
+
+        var score = 0;
+
+        for (var i = 0; i < queryTerms.Length - 1; i++)
+        {
+            for (var j = 0; j < contentTerms.Length - 1; j++)
+            {
+                if (queryTerms[i] == contentTerms[j] && queryTerms[i + 1] == contentTerms[j + 1])
+                    score += 20;
+            }
+        }
+
+        return score;
+    }
+
+    /// <summary>
     /// Scores a document chunk based on keyword matches.
     /// </summary>
     /// <param name="chunk"></param>
@@ -440,10 +812,11 @@ public sealed class DocumentSearchService
                 score += 10 * labelTerms;
         }
 
+        score += ScorePhraseMatch(query, content);
+        score += ScoreTableRowMatch(query, content);
+
         return score;
     }
-
-
 
     /// <summary>
     /// Adds ranked results based on their scores.
@@ -466,7 +839,7 @@ public sealed class DocumentSearchService
             var score = 1.0 / (rrfConstant + i + 1);
             var keywordScore = ScoreKeywordMatch(chunk, query, terms);
 
-            score += keywordScore * (isKeywordResult ? 0.001 : 0.0002);
+            score += keywordScore * (isKeywordResult ? 0.001 : 0.0005);
 
             scores[key] = scores.GetValueOrDefault(key) + score;
             chunks[key] = chunk;
