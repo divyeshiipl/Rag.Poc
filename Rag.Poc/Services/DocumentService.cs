@@ -1,21 +1,25 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Manages document records: finds or creates them, and detects content changes by file hash.
+/// </summary>
 public class DocumentService
 {
     private readonly RagDbContext _db;
 
+    /// <summary>
+    /// Creates the service with the database context.
+    /// </summary>
     public DocumentService(RagDbContext db)
     {
         _db = db;
     }
 
     #region Public Methods
+
     /// <summary>
-    /// To get or add new document into db
+    /// Gets the document for a project and file path, or creates it. If the file hash changed, updates the hash and resets status to "Pending".
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
     public async Task<Models.Document> GetOrCreateAsync(Guid projectId, string filePath)
     {
         var existing = await _db.Documents
@@ -63,10 +67,8 @@ public class DocumentService
     #region Private Methods
 
     /// <summary>
-    /// To calculate the hash for the doc files
+    /// Computes the SHA-256 hash of a file as an uppercase hex string.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
     private static async Task<string> CalculateHashAsync(string filePath)
     {
         await using var stream = File.OpenRead(filePath);
@@ -75,10 +77,8 @@ public class DocumentService
     }
 
     /// <summary>
-    /// To get content type
+    /// Guesses the MIME content type from the file extension (falls back to application/octet-stream).
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
     private static string GetContentType(string filePath)
     {
         return Path.GetExtension(filePath)

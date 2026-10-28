@@ -1,18 +1,22 @@
 ﻿namespace Rag.Poc.Controllers;
 
+/// <summary>
+/// Handles read-only project queries like listing projects and their documents.
+/// </summary>
 [Route("api/[controller]")]
 [ApiController]
 public class ProjectsQueryController : ControllerBase
 {
     private readonly RagDbContext _db;
 
+    /// <summary>
+    /// Creates the controller with the database context.
+    /// </summary>
     public ProjectsQueryController(RagDbContext db) => _db = db;
 
     /// <summary>
-    /// Get a list of all projects
+    /// Gets all projects, newest first, with their document counts.
     /// </summary>
-    /// <param name="ct"></param>
-    /// <returns></returns>
     [HttpGet]
     public async Task<IActionResult> GetAll(CancellationToken ct)
     {
@@ -33,11 +37,8 @@ public class ProjectsQueryController : ControllerBase
     }
 
     /// <summary>
-    /// Get the list of documnents by project Id
+    /// Gets all documents for a project, ordered by file name.
     /// </summary>
-    /// <param name="id"></param>
-    /// <param name="ct"></param>
-    /// <returns></returns>
     [HttpGet("{id:guid}/documents")]
     public async Task<IActionResult> GetDocuments(Guid id, CancellationToken ct)
     {

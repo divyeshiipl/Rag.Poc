@@ -1,15 +1,16 @@
-﻿using System.Text;
-using System.Text.Json;
-using Rag.Poc.Constants;
-using Rag.Poc.Models;
+﻿namespace Rag.Poc.Services;
 
-namespace Rag.Poc.Services;
-
+/// <summary>
+/// Re-ranks chunks by asking a local Ollama model to score each passage's relevance to the query.
+/// </summary>
 public sealed class OllamaRerankerService : IRerankerService
 {
     private readonly HttpClient _http;
     private readonly ILogger<OllamaRerankerService> _logger;
 
+    /// <summary>
+    /// Creates the service with an HTTP client pointing at the Ollama host and a logger.
+    /// </summary>
     public OllamaRerankerService(HttpClient http, ILogger<OllamaRerankerService> logger)
     {
         _http = http;
@@ -19,13 +20,8 @@ public sealed class OllamaRerankerService : IRerankerService
     #region Public Methods
 
     /// <summary>
-    /// To rerank the chunks
+    /// Re-ranks candidates by relevance and returns the top N. Falls back to the original order on any failure.
     /// </summary>
-    /// <param name="query"></param>
-    /// <param name="candidates"></param>
-    /// <param name="topN"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<List<ScoredChunk>> RerankAsync(string query, List<ScoredChunk> candidates, int topN, CancellationToken cancellationToken = default)
     {
         if (candidates.Count <= 1)
@@ -103,10 +99,8 @@ public sealed class OllamaRerankerService : IRerankerService
     #region Private Methods
 
     /// <summary>
-    /// To parse the score array
+    /// Pulls the JSON number array out of the model's raw text (between the first '[' and last ']'); returns empty on failure.
     /// </summary>
-    /// <param name="raw"></param>
-    /// <returns></returns>
     private static List<double> ParseScoreArray(string raw)
     {
         var start = raw.IndexOf('[');

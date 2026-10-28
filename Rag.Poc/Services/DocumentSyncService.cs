@@ -1,11 +1,17 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Keeps a project's document records in sync with the files on disk (adds, updates, deletes).
+/// </summary>
 public class DocumentSyncService
 {
     private readonly RagDbContext _db;
     private readonly DocumentDiscoveryService _discoveryService;
     private readonly ILogger<DocumentSyncService> _logger;
 
+    /// <summary>
+    /// Creates the service with its dependencies.
+    /// </summary>
     public DocumentSyncService(RagDbContext db, DocumentDiscoveryService discoveryService, ILogger<DocumentSyncService> logger)
     {
         _db = db;
@@ -16,13 +22,8 @@ public class DocumentSyncService
     #region Public Methods
 
     /// <summary>
-    /// To Sync the Project (Add Docs/ Update Docs and DocChunks)
+    /// Syncs a project's documents with its folder: adds new files, updates changed ones, deletes removed ones.
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="InvalidOperationException"></exception>
-    /// <exception cref="DirectoryNotFoundException"></exception>
     public async Task<SyncResult> SyncProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         var result = new SyncResult();
@@ -96,14 +97,8 @@ public class DocumentSyncService
     #region Private Methods
 
     /// <summary>
-    /// To process existing documents
+    /// Checks whether an existing document changed by hash; adds it to unchanged or changed lists.
     /// </summary>
-    /// <param name="document"></param>
-    /// <param name="projectFolder"></param>
-    /// <param name="filePath"></param>
-    /// <param name="result"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task ProcessExistingDocumentAsync(Models.Document document, string projectFolder, string filePath, SyncResult result, CancellationToken cancellationToken)
     {
         var currentHash = await CalculateHashAsync(filePath, cancellationToken);
@@ -121,13 +116,8 @@ public class DocumentSyncService
     }
 
     /// <summary>
-    /// To create new document
+    /// Builds a new document record for a newly discovered file.
     /// </summary>
-    /// <param name="project"></param>
-    /// <param name="projectFolder"></param>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<Models.Document> CreateNewDocumentAsync(Project project, string projectFolder, string filePath, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(filePath);
@@ -150,16 +140,10 @@ public class DocumentSyncService
             ProcessedAtUtc = null
         };
     }
-   
+
     /// <summary>
-    /// To update the changed document
+    /// Refreshes a changed document's metadata, deletes its chunks, and sets status to "Pending".
     /// </summary>
-    /// <param name="document"></param>
-    /// <param name="projectFolder"></param>
-    /// <param name="filePath"></param>
-    /// <param name="newHash"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task UpdateChangedDocumentAsync(Models.Document document, string projectFolder, string filePath, string newHash, CancellationToken cancellationToken)
     {
         var fileInfo = new FileInfo(filePath);
@@ -181,11 +165,8 @@ public class DocumentSyncService
     }
 
     /// <summary>
-    /// To calculate hash for files
+    /// Computes the SHA-256 hash of a file as an uppercase hex string.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private static async Task<string> CalculateHashAsync(string filePath, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(
@@ -202,21 +183,16 @@ public class DocumentSyncService
     }
 
     /// <summary>
-    /// To get relative path from project folder
+    /// Gets the path relative to the project folder, using forward slashes.
     /// </summary>
-    /// <param name="projectFolder"></param>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
     private static string GetRelativePath(string projectFolder, string filePath)
     {
         return Path.GetRelativePath(projectFolder, filePath).Replace(Path.DirectorySeparatorChar, '/');
     }
 
     /// <summary>
-    /// To get content type of the extention
+    /// Guesses the MIME content type from a file extension (falls back to application/octet-stream).
     /// </summary>
-    /// <param name="extension"></param>
-    /// <returns></returns>
     private static string GetContentType(string extension)
     {
         return extension.ToLowerInvariant() switch

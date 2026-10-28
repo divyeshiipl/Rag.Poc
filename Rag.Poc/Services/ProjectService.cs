@@ -1,9 +1,15 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Handles project management: creating projects and loading them with their documents.
+/// </summary>
 public class ProjectService
 {
     private readonly RagDbContext _db;
 
+    /// <summary>
+    /// Creates the service with the database context.
+    /// </summary>
     public ProjectService(RagDbContext db)
     {
         _db = db;
@@ -12,12 +18,8 @@ public class ProjectService
     #region Public Methods
 
     /// <summary>
-    /// To Add a new Project
+    /// Creates a new project and saves it to the database.
     /// </summary>
-    /// <param name="name"></param>
-    /// <param name="folder"></param>
-    /// <param name="description"></param>
-    /// <returns></returns>
     public async Task<Project> CreateAsync(string name, string folder, string? description = null)
     {
         var project = new Project
@@ -35,10 +37,8 @@ public class ProjectService
     }
 
     /// <summary>
-    /// To get project by projectid
+    /// Gets a project by id, including its documents (null if not found).
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <returns></returns>
     public async Task<Project?> GetAsync(Guid projectId)
     {
         return await _db.Projects.Include(x => x.Documents).FirstOrDefaultAsync(x => x.Id == projectId);

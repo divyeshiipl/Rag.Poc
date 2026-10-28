@@ -1,7 +1,7 @@
 ﻿namespace Rag.Poc.Services;
 
 /// <summary>
-/// Provides embedding functionality using the BGE-small model.
+/// Creates embeddings with the BGE-small ONNX model for documents and queries.
 /// </summary>
 public sealed class EmbeddingService : IEmbeddingService, IDisposable
 {
@@ -10,11 +10,10 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     private readonly BgeSmallOptions _options;
 
     #region Public Methods
+
     /// <summary>
-    /// Initializes a new instance of the <see cref="EmbeddingService"/> class.
+    /// Loads the BGE-small ONNX model and its vocabulary.
     /// </summary>
-    /// <param name="options"></param>
-    /// <exception cref="FileNotFoundException"></exception>
     public EmbeddingService(BgeSmallOptions options)
     {
         _options = options;
@@ -30,23 +29,16 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     }
 
     /// <summary>
-    /// Generates an embedding for the given document text.
+    /// Embeds document text as-is (no query prefix).
     /// </summary>
-    /// <param name="text"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public Task<float[]> GenerateDocumentEmbeddingAsync(string text, CancellationToken cancellationToken = default)
     {
         return GenerateEmbeddingAsync(text, cancellationToken);
     }
 
     /// <summary>
-    /// Generates an embedding for the given query text.
+    /// Embeds query text with the BGE query instruction prefix.
     /// </summary>
-    /// <param name="text"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
     public Task<float[]> GenerateQueryEmbeddingAsync(string text, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -62,13 +54,8 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     #region Private Methods
 
     /// <summary>
-    /// Generates an embedding for the given text.
+    /// Tokenizes text, runs the ONNX model, takes the CLS vector, L2-normalizes it, and checks its size.
     /// </summary>
-    /// <param name="text"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
-    /// <exception cref="InvalidOperationException"></exception>
     private Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -141,10 +128,8 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     }
 
     /// <summary>
-    /// To normalize the emdbeddings
+    /// Scales the vector in place to unit length (L2 norm = 1).
     /// </summary>
-    /// <param name="embedding"></param>
-    /// <exception cref="InvalidOperationException"></exception>
     private static void Normalize(float[] embedding)
     {
         double sum = 0;
@@ -162,7 +147,7 @@ public sealed class EmbeddingService : IEmbeddingService, IDisposable
     }
 
     /// <summary>
-    /// To dispose the session
+    /// Frees the ONNX inference session.
     /// </summary>
     public void Dispose()
     {

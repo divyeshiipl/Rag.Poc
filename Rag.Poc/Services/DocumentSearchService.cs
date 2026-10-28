@@ -1,5 +1,8 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Searches document chunks for RAG: semantic, hybrid (vector + BM25), filtered, full-table, and aggregate modes.
+/// </summary>
 public sealed class DocumentSearchService
 {
     private readonly IDbContextFactory<RagDbContext> _dbFactory;
@@ -7,6 +10,9 @@ public sealed class DocumentSearchService
     private readonly IRerankerService _reranker;
     private readonly ILogger<DocumentSearchService> _logger;
 
+    /// <summary>
+    /// Creates the service with its dependencies.
+    /// </summary>
     public DocumentSearchService(IDbContextFactory<RagDbContext> dbFactory, IEmbeddingService embeddingService, IRerankerService reranker, ILogger<DocumentSearchService> logger)
     {
         _dbFactory = dbFactory;
@@ -16,14 +22,10 @@ public sealed class DocumentSearchService
     }
 
     #region Public Methods
+
     /// <summary>
-    /// Search the chunks/docs for answer generation
+    /// Runs the retrieval plan: routes to the right handler by mode, otherwise does hybrid search with boosting and dedupe.
     /// </summary>
-    /// <param name="plan"></param>
-    /// <param name="requestedTopK"></param>
-    /// <param name="requestedNamespace"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<List<ScoredChunk>> SearchAsync(RetrievalPlan plan, int? requestedTopK = null, string? requestedNamespace = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -95,7 +97,7 @@ public sealed class DocumentSearchService
                     TopK = effectiveTopK,
                     Namespace = ns,
                     UseHybrid = true,
-                    UseReranker = false
+                    UseReranker = plan.Mode is RetrievalMode.Semantic or RetrievalMode.Exhaustive
                 };
                 results.AddRange(await SearchDetailedAsync(options, cancellationToken));
             }
@@ -160,40 +162,47 @@ public sealed class DocumentSearchService
         }
 
         var deduped = all
-            .GroupBy(x => DedupeKey(x.Chunk) + "|" + x.Source)
-            .Select(g => g.OrderByDescending(x => x.Score).First())
+            .GroupBy(x => DedupeKey(x.Chunk))
+            .Select(g =>
+            {
+                var best = g.OrderByDescending(x => x.Score).First();
+                return new ScoredChunk
+                {
+                    Chunk = best.Chunk,
+                    Score = best.Score,
+                    Source = string.Join("+", g.Select(x => x.Source).Distinct()),
+                    SubQuery = best.SubQuery
+                };
+            })
             .OrderByDescending(x => x.Score)
             .Take(effectiveTopK * Math.Max(1, perSubQuery.Count))
             .ToList();
 
         var expanded = await ExpandNeighboursAsync(deduped, cancellationToken);
 
-        var subQueryLookup = perSubQuery
-            .SelectMany(p => p.Chunks.Select(c => (Id: c.Chunk.Id, p.SubQuery)))
-            .GroupBy(x => x.Id)
-            .ToDictionary(g => g.Key, g => g.First().SubQuery);
-
-        return expanded
-            .Select(c => subQueryLookup.TryGetValue(c.Chunk.Id, out var sub)
-                ? new ScoredChunk
+        var finalDeduped = expanded
+            .GroupBy(x => DedupeKey(x.Chunk))
+            .Select(g =>
+            {
+                var best = g.OrderByDescending(x => x.Score).First();
+                return new ScoredChunk
                 {
-                    Chunk = c.Chunk,
-                    Score = c.Score,
-                    Source = c.Source,
-                    SubQuery = sub
-                }
-                : c)
+                    Chunk = best.Chunk,
+                    Score = best.Score,
+                    Source = string.Join("+", g.Select(x => x.Source).Distinct()),
+                    SubQuery = best.SubQuery
+                };
+            })
+            .OrderByDescending(x => x.Score)
+            .Take(effectiveTopK)
             .ToList();
+
+        return finalDeduped;
     }
 
     /// <summary>
-    /// Search the chunks/docs for answer generation with scores
+    /// Searches with scores using hybrid search and no reranker.
     /// </summary>
-    /// <param name="query"></param>
-    /// <param name="topK"></param>
-    /// <param name="ns"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<List<ScoredChunk>> SearchWithScoresAsync(string query, int topK, string? ns, CancellationToken cancellationToken = default)
     {
         return await SearchDetailedAsync(new RetrievalOptions
@@ -207,13 +216,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// Serach the chunks/docs with details
+    /// Runs vector and BM25 search, fuses them, optionally reranks, and returns top K.
     /// </summary>
-    /// <param name="options"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
-    /// <exception cref="ArgumentOutOfRangeException"></exception>
     public async Task<List<ScoredChunk>> SearchDetailedAsync(RetrievalOptions options, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(options.Query))
@@ -235,7 +239,13 @@ public sealed class DocumentSearchService
 
         if (options.MinSimilarity.HasValue)
         {
-            merged = merged.Where(x => x.Source == "bm25" || x.Score >= options.MinSimilarity.Value).ToList();
+            merged = merged.Where(x => x.Source.Contains("bm25", StringComparison.OrdinalIgnoreCase) || x.Score >= options.MinSimilarity.Value).ToList();
+        }
+
+        if (merged.Count > 0 && merged[0].Source.Contains("vector", StringComparison.OrdinalIgnoreCase) && !merged[0].Source.Contains("bm25", StringComparison.OrdinalIgnoreCase)
+            && merged[0].Score < 0.02)
+        {
+            return new List<ScoredChunk>();
         }
 
         if (options.UseReranker && merged.Count > 1)
@@ -263,10 +273,8 @@ public sealed class DocumentSearchService
     #region Private Methods
 
     /// <summary>
-    /// To format filters
+    /// Formats filters for logging as "Column Operator Value".
     /// </summary>
-    /// <param name="filters"></param>
-    /// <returns></returns>
     private static string FormatFilters(IReadOnlyList<QueryFilter>? filters)
     {
         if (filters is not { Count: > 0 }) return "(none)";
@@ -274,11 +282,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To expand neighbours
+    /// Adds adjacent chunks (±1 by index) from the same document/namespace as extra low-score results.
     /// </summary>
-    /// <param name="results"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> ExpandNeighboursAsync(List<ScoredChunk> results, CancellationToken cancellationToken)
     {
         if (results.Count == 0) return results;
@@ -326,12 +331,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To search all by text
+    /// Finds chunks whose content contains the given text (up to 500, deduped by content hash).
     /// </summary>
-    /// <param name="filterText"></param>
-    /// <param name="ns"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> SearchAllByTextAsync(string filterText, string? ns, CancellationToken cancellationToken)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
@@ -362,12 +363,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To search vectors
+    /// Runs a semantic vector search per sub-query and keeps the best similarity per chunk.
     /// </summary>
-    /// <param name="options"></param>
-    /// <param name="candidates"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> VectorSearchAsync(RetrievalOptions options, int candidates, CancellationToken cancellationToken)
     {
         var subQueries = SplitSubQueries(options.Query);
@@ -415,10 +412,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To split into sub queries
+    /// Splits a query on " | " into sub-queries; returns the original if there are none.
     /// </summary>
-    /// <param name="query"></param>
-    /// <returns></returns>
     private static List<string> SplitSubQueries(string query)
     {
         var parts = query
@@ -431,12 +426,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// For Bm25 search
+    /// Runs a BM25 full-text search using PostgreSQL tsquery.
     /// </summary>
-    /// <param name="options"></param>
-    /// <param name="candidates"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> Bm25SearchAsync(RetrievalOptions options, int candidates, CancellationToken cancellationToken)
     {
         var sanitized = options.Query.Replace(" | ", " ");
@@ -463,11 +454,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To build the filtered query
+    /// Builds the base chunk query with namespace and metadata filters.
     /// </summary>
-    /// <param name="db"></param>
-    /// <param name="options"></param>
-    /// <returns></returns>
     private static IQueryable<DocumentChunk> BuildFilteredQuery(RagDbContext db, RetrievalOptions options)
     {
         var q = db.DocumentChunks
@@ -494,11 +482,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// For reciprocal rank fusion of chunks
+    /// Merges two ranked lists with Reciprocal Rank Fusion (RRF).
     /// </summary>
-    /// <param name="listA"></param>
-    /// <param name="listB"></param>
-    /// <returns></returns>
     private static List<ScoredChunk> ReciprocalRankFusion(List<ScoredChunk> listA, List<ScoredChunk> listB)
     {
         var scores = new Dictionary<Guid, double>();
@@ -536,11 +521,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To calculate cosine distance
+    /// Computes cosine distance (1 - similarity) between two vectors.
     /// </summary>
-    /// <param name="a"></param>
-    /// <param name="b"></param>
-    /// <returns></returns>
     private static double CosineDistance(float[] a, float[] b)
     {
         double dot = 0, na = 0, nb = 0;
@@ -555,10 +537,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To build Ts query
+    /// Builds a PostgreSQL tsquery string: tokenize, keep tokens ≥2 chars, dedupe, OR them.
     /// </summary>
-    /// <param name="query"></param>
-    /// <returns></returns>
     private static string BuildTsQuery(string query)
     {
         var tokens = Regex.Split(query.ToLowerInvariant(), @"\W+")
@@ -573,10 +553,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To create content hash
+    /// Returns the SHA-256 hash of the trimmed content, used for dedupe.
     /// </summary>
-    /// <param name="content"></param>
-    /// <returns></returns>
     private static string ContentHash(string? content)
     {
         if (string.IsNullOrEmpty(content)) return string.Empty;
@@ -587,12 +565,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To search aggregates
+    /// Gets Excel aggregate chunks for the plan's namespaces, plus filtered rows if filters exist.
     /// </summary>
-    /// <param name="plan"></param>
-    /// <param name="ns"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> SearchAggregatesAsync(RetrievalPlan plan, string? ns, CancellationToken cancellationToken)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
@@ -626,12 +600,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To search full table
+    /// Gets full Excel table chunks (rows, schema, columns) for the plan's namespaces.
     /// </summary>
-    /// <param name="plan"></param>
-    /// <param name="ns"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> SearchFullTableAsync(RetrievalPlan plan, string? ns, CancellationToken cancellationToken)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
@@ -661,11 +631,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To search filtered rows
+    /// Applies structured filters to Excel rows/columns and builds one synthetic result per document + worksheet.
     /// </summary>
-    /// <param name="plan"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<List<ScoredChunk>> SearchFilteredRowsAsync(RetrievalPlan plan, CancellationToken cancellationToken)
     {
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
@@ -673,7 +640,9 @@ public sealed class DocumentSearchService
         var q = db.DocumentChunks
             .AsNoTracking()
             .Include(c => c.Document)
-            .Where(c => c.MetadataJson != null && (c.MetadataJson.Contains("\"RecordType\":\"ExcelRows\"") || c.MetadataJson.Contains("\"RecordType\":\"ExcelColumn\"")));
+            .Where(c => c.MetadataJson != null &&
+                        (c.MetadataJson.Contains("\"RecordType\":\"ExcelRows\"") ||
+                         c.MetadataJson.Contains("\"RecordType\":\"ExcelColumn\"")));
 
         if (plan.Namespaces is { Count: > 0 })
             q = q.Where(c => plan.Namespaces.Contains(c.Namespace));
@@ -684,14 +653,64 @@ public sealed class DocumentSearchService
             .Take(5000)
             .ToListAsync(cancellationToken);
 
-        var matchedRows = new SortedDictionary<int, string>();
-        var matchedBlockIds = new HashSet<Guid>();
-        var documentMap = new Dictionary<Guid, DocumentChunk>();
+        var matchesByGroup = GroupMatchedRows(candidates, plan);
+
+        _logger.LogInformation(
+            "SearchFilteredRowsAsync: {GroupCount} result groups, filters=[{Filters}]",
+            matchesByGroup.Count, FormatFilters(plan.Filters));
+
+        if (matchesByGroup.Count == 0)
+            return new List<ScoredChunk>();
+
+        var results = new List<ScoredChunk>();
+        foreach (var ((docId, sheetName), rows) in matchesByGroup)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"VERIFIED MATCHING ROWS — Worksheet: {sheetName}");
+            sb.AppendLine($"Filter: {FormatFilters(plan.Filters)}");
+            sb.AppendLine();
+            foreach (var kv in rows) sb.AppendLine(kv.Value);
+
+            var content = sb.ToString();
+
+            results.Add(new ScoredChunk
+            {
+                Chunk = new DocumentChunk
+                {
+                    Id = Guid.NewGuid(),
+                    DocumentId = docId,
+                    ChunkIndex = -1,
+                    Content = content,
+                    TokenCount = content.Length / 4,
+                    SectionTitle = $"Filtered rows — {sheetName}",
+                    SourceLocation = $"Worksheet: {sheetName}, Matched rows",
+                    Namespace = plan.Namespaces?.FirstOrDefault() ?? Namespaces.Structural,
+                    MetadataJson = "{\"RecordType\":\"ExcelRows\"}"
+                },
+                Score = 1.0,
+                Source = "filtered"
+            });
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Collects matching "Row N" lines from row chunks, grouped by document + worksheet.
+    /// </summary>
+    private static Dictionary<(Guid DocId, string Sheet), SortedDictionary<int, string>> GroupMatchedRows(
+        List<DocumentChunk> candidates,
+        RetrievalPlan plan)
+    {
+        var matchesByGroup = new Dictionary<(Guid DocId, string Sheet), SortedDictionary<int, string>>();
 
         foreach (var chunk in candidates)
         {
             if (chunk.MetadataJson?.Contains("\"RecordType\":\"ExcelRows\"") != true)
                 continue;
+
+            var sheetName = ExtractSheetName(chunk);
+            var key = (chunk.DocumentId, sheetName);
 
             foreach (var line in (chunk.Content ?? "").Split('\n'))
             {
@@ -703,62 +722,41 @@ public sealed class DocumentSearchService
 
                 var colon = line.IndexOf(':');
                 if (colon < 0) continue;
+
                 if (!int.TryParse(line.Substring(4, colon - 4).Trim(), out var rowNum))
                     continue;
 
-                if (!matchedRows.ContainsKey(rowNum))
-                    matchedRows[rowNum] = line.TrimEnd();
+                if (!matchesByGroup.TryGetValue(key, out var dict))
+                {
+                    dict = new SortedDictionary<int, string>();
+                    matchesByGroup[key] = dict;
+                }
 
-                matchedBlockIds.Add(chunk.Id);
-                if (!documentMap.ContainsKey(chunk.DocumentId))
-                    documentMap[chunk.DocumentId] = chunk;
+                if (!dict.ContainsKey(rowNum))
+                    dict[rowNum] = line.TrimEnd();
             }
         }
 
-        _logger.LogInformation("SearchFilteredRowsAsync: {RowBlocks} row-blocks, {MatchedRows} matched rows, filters=[{Filters}]", matchedBlockIds.Count, matchedRows.Count, FormatFilters(plan.Filters));
-
-        if (matchedRows.Count == 0)
-            return new List<ScoredChunk>();
-
-        var firstChunk = documentMap.Values.FirstOrDefault();
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("VERIFIED MATCHING ROWS (already filtered by the search engine):");
-        sb.AppendLine($"Filter: {FormatFilters(plan.Filters)}");
-        sb.AppendLine();
-        foreach (var kvp in matchedRows)
-            sb.AppendLine(kvp.Value);
-
-        var synthetic = new DocumentChunk
-        {
-            Id = Guid.NewGuid(),
-            DocumentId = firstChunk?.DocumentId ?? Guid.Empty,
-            ChunkIndex = -1,
-            Content = sb.ToString(),
-            TokenCount = sb.Length / 4,
-            SectionTitle = "Filtered rows",
-            SourceLocation = $"Worksheet: {firstChunk?.SectionTitle ?? "Unknown"}, Matched rows",
-            Namespace = plan.Namespaces?.FirstOrDefault() ?? "v2-structural",
-            MetadataJson = "{\"RecordType\":\"ExcelRows\"}",
-            Document = firstChunk?.Document
-        };
-
-        return new List<ScoredChunk>
-        {
-            new ScoredChunk
-            {
-                Chunk = synthetic,
-                Score = 1.0,
-                Source = "filtered"
-            }
-        };
+        return matchesByGroup;
     }
 
     /// <summary>
-    /// To check if row matches filter or not
+    /// Pulls the worksheet name out of a chunk's source location.
     /// </summary>
-    /// <param name="rowLine"></param>
-    /// <param name="plan"></param>
-    /// <returns></returns>
+    private static string ExtractSheetName(DocumentChunk chunk)
+    {
+        var loc = chunk.SourceLocation ?? "";
+        var idx = loc.IndexOf("Worksheet: ", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return "Unknown";
+
+        var rest = loc[(idx + "Worksheet: ".Length)..];
+        var commaIdx = rest.IndexOf(',');
+        return commaIdx < 0 ? rest.Trim() : rest[..commaIdx].Trim();
+    }
+
+    /// <summary>
+    /// Checks whether a row line passes all filters in the plan.
+    /// </summary>
     private static bool RowMatchesFilter(string rowLine, RetrievalPlan plan)
     {
         var colon = rowLine.IndexOf(':');
@@ -782,14 +780,13 @@ public sealed class DocumentSearchService
         foreach (var filter in plan.Filters)
         {
             var matchingFields = fields
-                .Where(f => f.Key.Equals(filter.Column, StringComparison.OrdinalIgnoreCase))
+                .Where(f => HeadersMatch(f.Key, filter.Column))
                 .ToList();
 
             if (matchingFields.Count == 0)
                 return false;
 
             var anyMatched = matchingFields.Any(f => Matches(f.Value, filter.Operator, filter.Value, filter.UpperBound));
-
             if (!anyMatched)
                 return false;
         }
@@ -798,13 +795,30 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To check if cell value matches or not
+    /// Checks whether two column headers refer to the same column (tolerant of naming differences).
     /// </summary>
-    /// <param name="cellValue"></param>
-    /// <param name="op"></param>
-    /// <param name="v1"></param>
-    /// <param name="v2"></param>
-    /// <returns></returns>
+    private static bool HeadersMatch(string actual, string requested)
+    {
+        var a = NormalizeHeader(actual);
+        var r = NormalizeHeader(requested);
+
+        if (a == r) return true;
+        if (a.Contains(r) || r.Contains(a)) return true;
+
+        var aTokens = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var rTokens = r.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return aTokens.Any(at => rTokens.Any(rt => at == rt || at.StartsWith(rt) || rt.StartsWith(at)));
+    }
+
+    /// <summary>
+    /// Lowercases and collapses whitespace in a header for comparison.
+    /// </summary>
+    private static string NormalizeHeader(string h) =>
+        Regex.Replace(h.ToLowerInvariant().Trim(), @"\s+", " ");
+
+    /// <summary>
+    /// Tests a cell value against a filter operator (contains, =, !=, &gt;, &lt;, &gt;=, &lt;=, between).
+    /// </summary>
     private static bool Matches(string cellValue, string op, string v1, string? v2)
     {
         if (string.IsNullOrWhiteSpace(cellValue)) return false;
@@ -812,7 +826,7 @@ public sealed class DocumentSearchService
         switch (op)
         {
             case "contains": return cellValue.Contains(v1, StringComparison.OrdinalIgnoreCase);
-            case "=": return cellValue.Equals(v1, StringComparison.OrdinalIgnoreCase);
+            case "=": return cellValue.Equals(v1, StringComparison.OrdinalIgnoreCase) || (v1.Length >= 4 && cellValue.Contains(v1, StringComparison.OrdinalIgnoreCase));
             case "!=": return !cellValue.Equals(v1, StringComparison.OrdinalIgnoreCase);
             case ">":
             case "<":
@@ -839,11 +853,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To check compare result
+    /// Interprets a comparison result under an operator (&gt;, &lt;, &gt;=, &lt;=).
     /// </summary>
-    /// <param name="comparison"></param>
-    /// <param name="op"></param>
-    /// <returns></returns>
     private static bool CompareResult(int comparison, string op) => op switch
     {
         ">" => comparison > 0,
@@ -854,12 +865,8 @@ public sealed class DocumentSearchService
     };
 
     /// <summary>
-    /// To check compare number
+    /// Tries to parse two strings as numbers (after stripping separators/currency) and compare them.
     /// </summary>
-    /// <param name="a"></param>
-    /// <param name="b"></param>
-    /// <param name="comparison"></param>
-    /// <returns></returns>
     private static bool TryCompareNumber(string a, string b, out int comparison)
     {
         comparison = 0;
@@ -878,12 +885,9 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To check compare data
+    /// Tries to parse two strings as dates and compare them.
     /// </summary>
-    /// <param name="a"></param>
-    /// <param name="b"></param>
-    /// <param name="comparison"></param>
-    /// <returns></returns>
+
     private static bool TryCompareDate(string a, string b, out int comparison)
     {
         comparison = 0;
@@ -899,10 +903,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To dedupe key for the chunk
+    /// Builds a dedupe key: Excel rows use document + index + namespace; others use content hash.
     /// </summary>
-    /// <param name="chunk"></param>
-    /// <returns></returns>
     private static string DedupeKey(DocumentChunk chunk)
     {
         if (chunk.MetadataJson?.Contains("\"RecordType\":\"ExcelRows\"") == true)
@@ -913,10 +915,8 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
-    /// To extract document hints
+    /// Pulls out likely document-name words from the query (skipping stop-words).
     /// </summary>
-    /// <param name="query"></param>
-    /// <returns></returns>
     private static List<string> ExtractDocumentHints(string query)
     {
         var hints = new List<string>();

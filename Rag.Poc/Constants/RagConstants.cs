@@ -11,13 +11,13 @@
     public const int RrfK = 60;
     public const int MaxRerankCandidates = 20;
     public const int EmbeddingDimension = 384;
-    public const string QueryInstruction =  "Represent this sentence for searching relevant passages: ";
+    public const string QueryInstruction = "Represent this sentence for searching relevant passages: ";
 
-    public const int MaxCharsPerChunk = 3_000;
-    public const int MaxTotalContextChars = 16_000;
-    public const int NumCtx = 8192;
-    public const int NumPredict = 2000;
+    public const int MaxCharsPerChunk = 6_000;
+    public const int MaxTotalContextChars = 48_000;
+    public const int NumCtx = 32_768;
+    public const int NumPredict = 2_000;
 
     public const string RerankModel = "llama3.2:latest";
-    public const int MaxPassageChars = 500;
+    public const int MaxPassageChars = 1_500;
 }

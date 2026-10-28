@@ -1,22 +1,25 @@
 ﻿namespace Rag.Poc.Controllers;
 
+/// <summary>
+/// Handles document ingestion operations like chunking and re-chunking for a project.
+/// </summary>
 [Route("api/[controller]")]
 [ApiController]
 public class IngestionController : ControllerBase
 {
     private readonly DocumentIngestionService _ingestionService;
 
+    /// <summary>
+    /// Creates the controller with the ingestion service.
+    /// </summary>
     public IngestionController(DocumentIngestionService ingestionService)
     {
         _ingestionService = ingestionService;
     }
 
     /// <summary>
-    /// To create the chunks of all documents of a project
+    /// Processes all documents in a project and creates text chunks.
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     [HttpPost("projects/{projectId:guid}")]
     public async Task<IActionResult> ProcessProject(Guid projectId, CancellationToken cancellationToken = default)
     {
@@ -25,10 +28,8 @@ public class IngestionController : ControllerBase
     }
 
     /// <summary>
-    /// To recreate the chunks of all documents of a project
+    /// Rebuilds the chunks for all documents in a project.
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <returns></returns>
     [HttpPost("projects/{projectId:guid}/rechunk")]
     public async Task<IActionResult> RechunkProject(Guid projectId)
     {

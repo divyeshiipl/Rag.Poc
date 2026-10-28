@@ -1,32 +1,26 @@
 ﻿namespace Rag.Poc.Models;
 
 /// <summary>
-/// To query filter
+/// A single structured filter for a data table, e.g. Category = "IT Hardware" or Cost between 100 and 500.
 /// </summary>
-/// <param name="Column"></param>
-/// <param name="Operator"></param>
-/// <param name="Value"></param>
-/// <param name="UpperBound"></param>
 public sealed record QueryFilter(string Column, string Operator, string Value, string? UpperBound = null);
 
 /// <summary>
-/// To retrive plan
+/// Describes how a query should be retrieved: search text, top-K, namespaces, mode, and any filters.
 /// </summary>
-/// <param name="SearchQuery"></param>
-/// <param name="TopK"></param>
-/// <param name="Namespaces"></param>
-/// <param name="Mode"></param>
-/// <param name="FilterText"></param>
-/// <param name="MinScore"></param>
-/// <param name="Rewritten"></param>
-/// <param name="Filters"></param>
 public sealed record RetrievalPlan(string SearchQuery, int? TopK, List<string> Namespaces, RetrievalMode Mode, string? FilterText = null,double? MinScore = null, bool Rewritten = false, IReadOnlyList<QueryFilter>? Filters = null);
 
+/// <summary>
+/// Uses a local Ollama model to pick a retrieval strategy for a question, handling meta, sub-questions, and merge.
+/// </summary>
 public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<OllamaRetrievalPlanner> _logger;
 
+    /// <summary>
+    /// Creates the planner with an HTTP client pointing at the Ollama host and a logger.
+    /// </summary>
     public OllamaRetrievalPlanner(HttpClient httpClient, ILogger<OllamaRetrievalPlanner> logger)
     {
         _httpClient = httpClient;
@@ -34,13 +28,10 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     #region Public Methods
+
     /// <summary>
-    /// To Create plan to retrive the chunks
+    /// Builds a retrieval plan for the question (meta, single, or multi-part).
     /// </summary>
-    /// <param name="question"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
     public async Task<RetrievalPlan> CreatePlanAsync(string question, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
@@ -70,10 +61,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     #region Private Methods
 
     /// <summary>
-    /// To strip document references
+    /// Removes leading document-reference phrases (e.g. "According to the SOP, ...") if the rest is meaningful.
     /// </summary>
-    /// <param name="question"></param>
-    /// <returns></returns>
     private static string StripDocumentReference(string question)
     {
         var patterns = new[]
@@ -99,10 +88,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To split the sub questions
+    /// Splits a question into sub-questions by question marks, list markers, or a single "and"/"or".
     /// </summary>
-    /// <param name="input"></param>
-    /// <returns></returns>
     private static List<string> SplitSubQuestions(string input)
     {
         var qmParts = input
@@ -151,10 +138,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To find list maker positions
+    /// Finds positions of list markers (numbered or bulleted) and returns where each item's content begins.
     /// </summary>
-    /// <param name="input"></param>
-    /// <returns></returns>
     private static List<int> FindListMarkerPositions(string input)
     {
         var positions = new List<int>();
@@ -205,32 +190,23 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To check marker punctuation
+    /// Checks whether a char can end a list marker (., ), ], :, •, *, -).
     /// </summary>
-    /// <param name="c"></param>
-    /// <returns></returns>
     private static bool IsMarkerPunctuation(char c) =>  c == '.' || c == ')' || c == ']' || c == ':' || c == '•' || c == '*' || c == '-';
 
     /// <summary>
-    /// To check bare bullet
+    /// Checks whether a char is a bare bullet (•, *, -).
     /// </summary>
-    /// <param name="c"></param>
-    /// <returns></returns>
     private static bool IsBareBullet(char c) => c == '•' || c == '*' || c == '-';
 
     /// <summary>
-    /// To trim trailing
+    /// Trims trailing punctuation and whitespace.
     /// </summary>
-    /// <param name="s"></param>
-    /// <returns></returns>
     private static string TrimTrailing(string s) => s.TrimEnd('.', '?', '!', ':', ';', ' ', '\t', '\n', '\r');
 
     /// <summary>
-    /// 
+    /// Asks the model to plan one sub-question; falls back to a semantic plan on failure.
     /// </summary>
-    /// <param name="subQuestion"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task<RetrievalPlan> PlanOneAsync(string subQuestion, CancellationToken cancellationToken)
     {
         var prompt = BuildPrompt(subQuestion) + "\n/no_think";
@@ -247,7 +223,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             {
                 temperature = 0,
                 num_predict = 400,
-                top_p = 0.1
+                top_p = 0.1,
+                num_ctx = 4096
             }
         };
 
@@ -281,11 +258,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To create plan
+    /// Validates and normalizes the model's parsed plan into a RetrievalPlan.
     /// </summary>
-    /// <param name="parsed"></param>
-    /// <param name="original"></param>
-    /// <returns></returns>
     private RetrievalPlan ToPlan(PlannerJson parsed, string original)
     {
         var mode = parsed.Mode ?? RetrievalMode.Semantic;
@@ -329,15 +303,17 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         if (confidence < 0.6 && namespaces.Count == 1 && mode != RetrievalMode.Exhaustive)
         {
-            var extra = namespaces[0] switch
+            var extras = namespaces[0] switch
             {
-                Namespaces.Default => Namespaces.Large,
-                Namespaces.Structural => Namespaces.Default,
-                Namespaces.Large => Namespaces.Default,
-                _ => null
+                Namespaces.Default => new[] { Namespaces.Large, Namespaces.Structural },
+                Namespaces.Structural => new[] { Namespaces.Default, Namespaces.Large },
+                Namespaces.Large => new[] { Namespaces.Default, Namespaces.Structural },
+                _ => Array.Empty<string>()
             };
-            if (extra is not null && !namespaces.Contains(extra))
-                namespaces.Add(extra);
+
+            foreach (var extra in extras)
+                if (!namespaces.Contains(extra))
+                    namespaces.Add(extra);
         }
 
         var filterText = string.IsNullOrWhiteSpace(parsed.FilterText) ? null : parsed.FilterText.Trim();
@@ -368,12 +344,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To merge sub plans
+    /// Merges sub-plans into one: highest-priority mode, unioned namespaces, max TopK, " | "-joined query, combined filters.
     /// </summary>
-    /// <param name="original"></param>
-    /// <param name="subQuestions"></param>
-    /// <param name="subPlans"></param>
-    /// <returns></returns>
     private static RetrievalPlan MergeSubPlans(string original, List<string> subQuestions, List<RetrievalPlan> subPlans)
     {
         if (subPlans.Count == 1) return subPlans[0];
@@ -427,10 +399,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To create the priority for mode
+    /// Gives a merge priority to each mode (Exhaustive 4 &gt; Structural 3 &gt; Semantic 2 &gt; Meta 1).
     /// </summary>
-    /// <param name="m"></param>
-    /// <returns></returns>
     private static int ModePriority(RetrievalMode m) => m switch
     {
         RetrievalMode.Exhaustive => 4,
@@ -441,10 +411,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     };
 
     /// <summary>
-    /// To check trivial
+    /// Checks whether a question is trivial (one word, no "?", no digits).
     /// </summary>
-    /// <param name="s"></param>
-    /// <returns></returns>
     private static bool IsTrivial(string s)
     {
         var words = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -452,10 +420,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
     }
 
     /// <summary>
-    /// To create meta plan
+    /// Builds a meta plan for greetings or trivial questions.
     /// </summary>
-    /// <param name="q"></param>
-    /// <returns></returns>
     private static RetrievalPlan MetaPlan(string q) => new(
         SearchQuery: q,
         TopK: null,
@@ -466,10 +432,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         Rewritten: false);
 
     /// <summary>
-    /// To create fall back plan
+    /// Safe fallback: a semantic plan over default and large namespaces.
     /// </summary>
-    /// <param name="question"></param>
-    /// <returns></returns>
     private static RetrievalPlan Fallback(string question) => new(
         SearchQuery: question,
         TopK: RagConstants.DefaultTopK,
@@ -479,10 +443,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         Rewritten: false);
 
     /// <summary>
-    /// To build prompt
+    /// Builds the planner prompt describing the JSON schema and decision steps.
     /// </summary>
-    /// <param name="subQuestion"></param>
-    /// <returns></returns>
     private static string BuildPrompt(string subQuestion) => $$"""
         You are the retrieval planner for an enterprise document search system.
         Given ONE user question, produce ONE JSON object describing how to search.
@@ -691,10 +653,8 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         """;
 
     /// <summary>
-    /// To convert filters
+    /// Turns raw filter JSON into QueryFilter objects, dropping invalid entries.
     /// </summary>
-    /// <param name="raw"></param>
-    /// <returns></returns>
     private static List<QueryFilter>? ConvertFilters(List<FilterJson>? raw)
     {
         if (raw is null) return null;

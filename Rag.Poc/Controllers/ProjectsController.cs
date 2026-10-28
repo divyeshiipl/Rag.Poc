@@ -1,22 +1,25 @@
 ﻿namespace Rag.Poc.Controllers;
 
+/// <summary>
+/// Handles project management, such as creating projects.
+/// </summary>
 [Route("api/[controller]")]
 [ApiController]
 public class ProjectsController : ControllerBase
 {
     private readonly RagDbContext _db;
 
+    /// <summary>
+    /// Creates the controller with the database context.
+    /// </summary>
     public ProjectsController(RagDbContext db)
     {
         _db = db;
     }
 
     /// <summary>
-    /// To Add a new project
+    /// Creates a new project and saves it to the database.
     /// </summary>
-    /// <param name="project"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     [HttpPost]
     public async Task<IActionResult> Create(Project project, CancellationToken cancellationToken)
     {

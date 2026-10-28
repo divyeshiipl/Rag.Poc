@@ -1,17 +1,15 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Extracts text, sections, and tables from TXT, DOCX, XLSX, XLS, CSV, SQL, and MD files.
+/// </summary>
 public class DocumentExtractor
 {
     #region Public Methods
 
     /// <summary>
-    /// To Extract the documents
+    /// Extracts a file by picking the right extractor for its extension.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="FileNotFoundException"></exception>
-    /// <exception cref="NotSupportedException"></exception>
     public async Task<ExtractedDocument> ExtractAsync(string filePath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(filePath))
@@ -28,17 +26,15 @@ public class DocumentExtractor
             ".xlsx" => await ExtractExcelAsync(filePath, cancellationToken),
             ".xls" => await ExtractExcelAsync(filePath, cancellationToken),
             ".csv" => await ExtractExcelAsync(filePath, cancellationToken),
+            ".sql" => await ExtractSqlFileAsync(filePath, cancellationToken),
+            ".md" or ".markdown" => await ExtractTextFileAsync(filePath, cancellationToken),
             _ => throw new NotSupportedException($"File type '{extension}' is not supported yet.")
         };
     }
 
     /// <summary>
-    /// To extract the excel/csv files
+    /// Extracts an Excel workbook or CSV as schema, aggregates, column, and row-block sections.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="FileNotFoundException"></exception>
     public async Task<ExtractedDocument> ExtractExcelAsync(string filePath, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -62,11 +58,8 @@ public class DocumentExtractor
     #region Private Methods
 
     /// <summary>
-    /// To extract the text files
+    /// Reads a text file and splits it into sections by top-level headings.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private static async Task<ExtractedDocument> ExtractTextFileAsync(string filePath, CancellationToken cancellationToken)
     {
         var text = await File.ReadAllTextAsync(filePath, cancellationToken);
@@ -91,10 +84,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To extract the sections from the sections
+    /// Splits normalized text into sections by top-level headings.
     /// </summary>
-    /// <param name="text"></param>
-    /// <returns></returns>
     private static List<DocumentSection> ExtractSections(string text)
     {
         var lines = text.Split('\n');
@@ -159,10 +150,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// Checks is there any top level heading
+    /// Checks whether a line is a top-level heading (number, or Markdown #).
     /// </summary>
-    /// <param name="line"></param>
-    /// <returns></returns>
     private static bool IsTopLevelHeading(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
@@ -170,24 +159,21 @@ public class DocumentExtractor
 
         line = line.Trim();
 
+        if (Regex.IsMatch(line, @"^#{1,6}\s+\S+"))
+            return true;
+
         if (!Regex.IsMatch(line, @"^\d+[\.\)]\s+\S+"))
-        {
             return false;
-        }
 
         if (Regex.IsMatch(line, @"[.!?;:]$"))
-        {
             return false;
-        }
 
         return true;
     }
 
     /// <summary>
-    /// To append the line to the document section
+    /// Appends a line to the section, adding a newline separator if needed.
     /// </summary>
-    /// <param name="section"></param>
-    /// <param name="line"></param>
     private static void AppendLine(DocumentSection section, string line)
     {
         if (string.IsNullOrEmpty(section.Content))
@@ -205,9 +191,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To append the blank line to documnet section
+    /// Adds a blank line (paragraph break) to the section if it has content.
     /// </summary>
-    /// <param name="section"></param>
     private static void AppendBlankLine(DocumentSection? section)
     {
         if (section == null)
@@ -223,9 +208,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To finalize the document section
+    /// Cleans up the section content and stores its heading in metadata.
     /// </summary>
-    /// <param name="section"></param>
     private static void FinalizeSection(DocumentSection section)
     {
         section.Content = NormalizeSectionContent(section.Content);
@@ -237,10 +221,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To check the useful content of the document section
+    /// Checks whether a section has a heading or content.
     /// </summary>
-    /// <param name="section"></param>
-    /// <returns></returns>
     private static bool HasUsefulContent(DocumentSection section)
     {
         return
@@ -249,10 +231,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To normalize section's content
+    /// Collapses extra spaces/tabs in the section content and trims it.
     /// </summary>
-    /// <param name="content"></param>
-    /// <returns></returns>
     private static string NormalizeSectionContent(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -262,10 +242,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To normalize the text
+    /// Converts line endings to \n and trims the text.
     /// </summary>
-    /// <param name="text"></param>
-    /// <returns></returns>
     private static string NormalizeText(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -275,11 +253,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To extract the word documents
+    /// Reads a .docx file and splits it into sections by headings and tables.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private static Task<ExtractedDocument> ExtractWordDocumentAsync(string filePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -330,11 +305,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To Process pragraphs
+    /// Adds a Word paragraph to the current section, or starts a new section if it's a heading.
     /// </summary>
-    /// <param name="paragraph"></param>
-    /// <param name="currentSection"></param>
-    /// <param name="sections"></param>
     private static void ProcessParagraph(Paragraph paragraph, ref DocumentSection? currentSection, List<DocumentSection> sections)
     {
         var text = paragraph.InnerText?.Trim();
@@ -379,10 +351,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To check is there heading style
+    /// Checks whether a Word style is Heading1 through Heading6.
     /// </summary>
-    /// <param name="style"></param>
-    /// <returns></returns>
     private static bool IsHeadingStyle(string? style)
     {
         if (string.IsNullOrWhiteSpace(style))
@@ -397,47 +367,52 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To process the tables
+    /// Converts a Word table into its own section with pipe-separated rows.
     /// </summary>
-    /// <param name="table"></param>
-    /// <param name="currentSection"></param>
-    /// <param name="sections"></param>
     private static void ProcessTable(Table table, ref DocumentSection? currentSection, List<DocumentSection> sections)
     {
-        if (currentSection == null)
+        if (currentSection != null)
         {
-            currentSection = new DocumentSection
-                {
-                    Heading = null,
-                    Content = string.Empty,
-                    ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                };
+            FinalizeSection(currentSection);
+            if (HasUsefulContent(currentSection))
+                sections.Add(currentSection);
+            currentSection = null;
         }
 
-        var rows = table.Elements<TableRow>();
+        var rows = new List<string>();
+        var firstRowNumber = sections.Count + 1;
 
-        foreach (var row in rows)
+        foreach (var row in table.Elements<TableRow>())
         {
             var cells = row.Elements<TableCell>()
-                    .Select(cell =>
-                        NormalizeWhitespace(
-                            cell.InnerText))
-                    .Where(x =>
-                        !string.IsNullOrWhiteSpace(x))
-                    .ToList();
+                .Select(cell => NormalizeWhitespace(cell.InnerText))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
 
-            if (cells.Count == 0)
-                continue;
-
-            AppendContent(currentSection, string.Join(" | ", cells));
+            if (cells.Count == 0) continue;
+            rows.Add(string.Join(" | ", cells));
         }
+
+        if (rows.Count == 0) return;
+
+        var tableText = string.Join("\n", rows);
+
+        sections.Add(new DocumentSection
+        {
+            Heading = $"Table ({rows.Count} rows)",
+            Content = tableText,
+            ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.table",
+            SourceLocation = $"Table: rows {firstRowNumber}-{firstRowNumber + rows.Count - 1}",
+            Metadata = new Dictionary<string, string>
+            {
+                ["TableRowCount"] = rows.Count.ToString(CultureInfo.InvariantCulture)
+            }
+        });
     }
 
     /// <summary>
-    /// To append the content
+    /// Appends content to a section with a newline separator when needed.
     /// </summary>
-    /// <param name="section"></param>
-    /// <param name="content"></param>
     private static void AppendContent(DocumentSection section, string content)
     {
         content = NormalizeWhitespace(content);
@@ -455,10 +430,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To normalize the white space
+    /// Collapses all whitespace runs into a single space and trims.
     /// </summary>
-    /// <param name="text"></param>
-    /// <returns></returns>
     private static string NormalizeWhitespace(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -468,10 +441,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To build section text
+    /// Joins a section's heading and content for display.
     /// </summary>
-    /// <param name="section"></param>
-    /// <returns></returns>
     private static string BuildSectionText(DocumentSection section)
     {
         if (string.IsNullOrWhiteSpace(section.Heading))
@@ -484,11 +455,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To extract work book
+    /// Builds sections from an Excel workbook or CSV file, split by sheet and blank-row tables.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private static List<DocumentSection> ExtractWorkbook(string filePath, CancellationToken cancellationToken)
     {
         var sections = new List<DocumentSection>();
@@ -531,6 +499,9 @@ public class DocumentExtractor
                 if (tableRows.Count == 0) continue;
 
                 var tableSheetName = tables.Count > 1 ? $"{sheetName} (Table {t + 1})" : sheetName;
+
+                ExtractLeadingHeadingsAsNotes(tableRows, tableSheetName, sections);
+                if (tableRows.Count == 0) continue;
 
                 var headerRow = tableRows[0];
                 var headers = BuildHeaders(headerRow.Values);
@@ -605,12 +576,13 @@ public class DocumentExtractor
         return sections;
     }
 
-    private static List<string> BuildHeaders(
-        List<string> headerValues)
+    /// <summary>
+    /// Builds unique column headers, naming blank ones "Column N" and de-duplicating repeats.
+    /// </summary>
+    private static List<string> BuildHeaders(List<string> headerValues)
     {
         var headers = new List<string>();
-        var usedNames = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
+        var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var i = 0; i < headerValues.Count; i++)
         {
@@ -634,10 +606,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To format cell value
+    /// Formats a cell value, handling nulls, dates, and numbers.
     /// </summary>
-    /// <param name="value"></param>
-    /// <returns></returns>
     private static string FormatCellValue(object? value)
     {
         if (value is null || value is DBNull)
@@ -662,10 +632,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To split rows into tables
+    /// Splits worksheet rows into tables, using blank rows as separators.
     /// </summary>
-    /// <param name="rows"></param>
-    /// <returns></returns>
     private static List<List<(int Number, List<string> Values)>> SplitIntoTables(List<(int Number, List<string> Values)> rows)
     {
         var tables = new List<List<(int Number, List<string> Values)>>();
@@ -696,12 +664,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To format the row lines
+    /// Formats one data row as "Row N: Header: value | ...".
     /// </summary>
-    /// <param name="rowNum"></param>
-    /// <param name="headers"></param>
-    /// <param name="values"></param>
-    /// <returns></returns>
     private static string FormatRowLine(int rowNum, List<string> headers, List<string> values)
     {
         var fields = new List<string>();
@@ -717,12 +681,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To build aggregate section
+    /// Builds an aggregates section with per-column stats and categorical breakdowns.
     /// </summary>
-    /// <param name="sheetName"></param>
-    /// <param name="headers"></param>
-    /// <param name="dataRows"></param>
-    /// <returns></returns>
     private static DocumentSection BuildAggregateSection(string sheetName, List<string> headers, List<(int Number, List<string> Values)> dataRows)
     {
         var sb = new System.Text.StringBuilder();
@@ -903,12 +863,8 @@ public class DocumentExtractor
     }
 
     /// <summary>
-    /// To build column index sections
+    /// Builds one section per column, listing up to 200 values as "Row N: value".
     /// </summary>
-    /// <param name="sheetName"></param>
-    /// <param name="headers"></param>
-    /// <param name="dataRows"></param>
-    /// <returns></returns>
     private static IEnumerable<DocumentSection> BuildColumnIndexSections(string sheetName, List<string> headers, List<(int Number, List<string> Values)> dataRows)
     {
         for (var c = 0; c < headers.Count; c++)
@@ -950,6 +906,98 @@ public class DocumentExtractor
             };
         }
     }
+
+    /// <summary>
+    /// Splits a SQL file into sections, one per statement (CREATE, ALTER, INSERT, etc.).
+    /// </summary>
+    private static async Task<ExtractedDocument> ExtractSqlFileAsync(string filePath, CancellationToken cancellationToken)
+    {
+        var text = await File.ReadAllTextAsync(filePath, cancellationToken);
+        text = NormalizeText(text);
+
+        if (string.IsNullOrWhiteSpace(text))
+            return new ExtractedDocument { Text = string.Empty, Sections = [] };
+
+        var sections = new List<DocumentSection>();
+
+        var blocks = Regex.Split(text, @"(?=^\s*(?:CREATE|ALTER|INSERT|DROP|COMMENT)\s)",
+                            RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+        foreach (var block in blocks)
+        {
+            var trimmed = block.Trim();
+            if (trimmed.Length == 0) continue;
+
+            var firstLine = trimmed.Split('\n')[0].Trim();
+            var heading = firstLine.Length > 120 ? firstLine[..120] + "…" : firstLine;
+
+            sections.Add(new DocumentSection
+            {
+                Heading = heading,
+                Content = trimmed,
+                ContentType = "application/sql",
+                SourceLocation = $"SQL block: {heading}",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["StatementType"] = DetectSqlStatementType(trimmed)
+                }
+            });
+        }
+
+        return new ExtractedDocument { Text = text, Sections = sections };
+    }
+
+    /// <summary>
+    /// Labels a SQL block by its leading keyword (CreateTable, CreateView, Insert, etc.).
+    /// </summary>
+    private static string DetectSqlStatementType(string block)
+    {
+        if (Regex.IsMatch(block, @"^\s*CREATE\s+TABLE", RegexOptions.IgnoreCase)) return "CreateTable";
+        if (Regex.IsMatch(block, @"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW", RegexOptions.IgnoreCase)) return "CreateView";
+        if (Regex.IsMatch(block, @"^\s*CREATE\s+(?:OR\s+ALTER\s+)?PROCEDURE", RegexOptions.IgnoreCase)) return "CreateProcedure";
+        if (Regex.IsMatch(block, @"^\s*INSERT\s+INTO", RegexOptions.IgnoreCase)) return "Insert";
+        if (Regex.IsMatch(block, @"^\s*COMMENT", RegexOptions.IgnoreCase)) return "Comment";
+        return "Other";
+    }
+
+    /// <summary>
+    /// Pulls heading-like rows off the top of a table into their own note sections.
+    /// </summary>
+    private static void ExtractLeadingHeadingsAsNotes(List<(int Number, List<string> Values)> tableRows, string sheetName, List<DocumentSection> sections)
+    {
+        while (tableRows.Count >= 2)
+        {
+            var first = tableRows[0];
+            var second = tableRows[1];
+            var firstNonBlank = first.Values.Count(v => !string.IsNullOrWhiteSpace(v));
+            var secondNonBlank = second.Values.Count(v => !string.IsNullOrWhiteSpace(v));
+
+            if (firstNonBlank != 1 || secondNonBlank < 2)
+                break;
+
+            var heading = first.Values.First(v => !string.IsNullOrWhiteSpace(v));
+
+            sections.Add(new DocumentSection
+            {
+                Heading = $"{sheetName} — note: {heading}",
+                Content = heading,
+                ContentType = "ExcelNote",
+                SourceLocation = $"Worksheet: {sheetName}, Row: {first.Number}",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["WorksheetName"] = sheetName,
+                    ["RecordType"] = "ExcelNote"
+                }
+            });
+
+            tableRows.RemoveAt(0);
+        }
+    }
+
+    /// <summary>
+    /// Checks whether a row has exactly one non-blank cell (likely a heading).
+    /// </summary>
+    private static bool IsLikelyHeadingRow((int Number, List<string> Values) row) => row.Values.Count(v => !string.IsNullOrWhiteSpace(v)) == 1;
 
     #endregion
 }

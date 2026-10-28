@@ -1,7 +1,7 @@
 ﻿namespace Rag.Poc.Services;
 
 /// <summary>
-/// Provides functionality for generating answers using the RAG approach.
+/// Generates RAG answers from retrieved chunks using the language model.
 /// </summary>
 public sealed class RagAnswerService
 {
@@ -10,10 +10,8 @@ public sealed class RagAnswerService
     private readonly ILanguageModelService _languageModelService;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="RagAnswerService"/> class.
+    /// Creates the service with the search and language model services.
     /// </summary>
-    /// <param name="searchService"></param>
-    /// <param name="languageModelService"></param>
     public RagAnswerService(DocumentSearchService searchService, ILanguageModelService languageModelService)
     {
         _searchService = searchService;
@@ -21,14 +19,10 @@ public sealed class RagAnswerService
     }
 
     #region Public Methods
+
     /// <summary>
-    /// Get the Answer from llm model
+    /// Answers the question from the given chunks, or returns a fallback message if there are none.
     /// </summary>
-    /// <param name="question"></param>
-    /// <param name="chunks"></param>
-    /// <param name="filters"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<string> AnswerFromChunksAsync(string question, IReadOnlyList<DocumentChunk> chunks, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken = default)
     {
         if (chunks.Count == 0)

@@ -1,9 +1,15 @@
 ﻿namespace Rag.Poc.Services;
 
+/// <summary>
+/// Generates answers by calling a local Ollama model with a grounded prompt built from document chunks.
+/// </summary>
 public sealed class OllamaLanguageModelService : ILanguageModelService
 {
     private readonly HttpClient _httpClient;
 
+    /// <summary>
+    /// Creates the service with an HTTP client pointing at the Ollama host.
+    /// </summary>
     public OllamaLanguageModelService(HttpClient httpClient)
     {
         _httpClient = httpClient;
@@ -12,14 +18,8 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     #region Public Methods
 
     /// <summary>
-    /// To Generate the answer from ollama with prompt 
+    /// Answers the question using only the given chunks as context. If filters are present, the prompt switches to strict row-copying mode.
     /// </summary>
-    /// <param name="question"></param>
-    /// <param name="chunks"></param>
-    /// <param name="filters"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="InvalidOperationException"></exception>
     public async Task<string> GenerateAnswerAsync(string question, IReadOnlyList<DocumentChunk> chunks, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken = default)
     {
         var context = BuildContext(chunks);
@@ -49,7 +49,6 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             {question}
 
             ANSWER:
-            /no_think
             """;
 
         var request = new
@@ -85,10 +84,8 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     #region Private Methods
 
     /// <summary>
-    /// To build the filter section
+    /// Builds the filter/instruction block; tells the model to copy each "Row N:" line verbatim and add a "Found N rows." line. Returns empty if no filters.
     /// </summary>
-    /// <param name="filters"></param>
-    /// <returns></returns>
     private static string BuildFilterSection(IReadOnlyList<QueryFilter>? filters)
     {
         if (filters is not { Count: > 0 })
@@ -119,10 +116,8 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     }
 
     /// <summary>
-    /// To build context from chunks
+    /// Builds numbered [Source N] blocks from the chunks, with per-type length caps and a total size limit.
     /// </summary>
-    /// <param name="chunks"></param>
-    /// <returns></returns>
     private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
     {
         var sb = new StringBuilder();
@@ -134,7 +129,13 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
 
             var content = chunk.Content ?? string.Empty;
             var isExcel = chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
-            var cap = isExcel ? 2_000 : RagConstants.MaxCharsPerChunk;
+            var isColumnIndex = chunk.MetadataJson?.Contains("\"RecordType\":\"ExcelColumn\"") == true;
+
+            int cap = isColumnIndex
+                ? int.MaxValue
+                : isExcel ? 2_000
+                : RagConstants.MaxCharsPerChunk;
+
             if (content.Length > cap) content = content[..cap];
 
             sb.AppendLine($"[Source {i++}]");

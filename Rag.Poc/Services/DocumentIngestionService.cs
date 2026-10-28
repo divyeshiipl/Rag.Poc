@@ -1,7 +1,7 @@
 ﻿namespace Rag.Poc.Services;
 
 /// <summary>
-/// Provides functionality for ingesting and processing documents.
+/// Ingests documents: syncs files, extracts text, chunks, and embeds them.
 /// </summary>
 public class DocumentIngestionService
 {
@@ -12,16 +12,33 @@ public class DocumentIngestionService
     private readonly IEmbeddingService _embeddingService;
     private readonly ILogger<DocumentIngestionService> _logger;
 
+    /// <summary>
+    /// Chunk settings (size, overlap, min chars) per namespace.
+    /// </summary>
     private static readonly Dictionary<string, (int Size, int Overlap, int MinChars)> ChunkConfig = new()
     {
-        [Namespaces.Default] = (2000, 200, 150),
+        [Namespaces.Default] = (2000, 400, 150),
         [Namespaces.Structural] = (400, 50, 100),
-        [Namespaces.Large] = (2500, 300, 200)
+        [Namespaces.Large] = (2500, 500, 200)
     };
 
-    private static IReadOnlyList<string> TargetNamespaces(bool isExcel) =>
-    isExcel ? Namespaces.All : Namespaces.All;
+    /// <summary>
+    /// Picks the target namespace based on file extension (tabular, long-form, or prose).
+    /// </summary>
+    private static IReadOnlyList<string> TargetNamespaces(string filePath)
+    {
+        var ext = Path.GetExtension(filePath).ToLowerInvariant();
+        return ext switch
+        {
+            ".xlsx" or ".xls" or ".csv" => new[] { Namespaces.Structural },
+            ".sql" or ".log" => new[] { Namespaces.Large },
+            _ => new[] { Namespaces.Default }
+        };
+    }
 
+    /// <summary>
+    /// Number of worksheet rows per Excel row-block chunk, per namespace.
+    /// </summary>
     private static readonly Dictionary<string, int> ExcelRowsPerBlock = new()
     {
         [Namespaces.Default] = 5,
@@ -29,6 +46,9 @@ public class DocumentIngestionService
         [Namespaces.Large] = 5
     };
 
+    /// <summary>
+    /// Creates the service with its dependencies.
+    /// </summary>
     public DocumentIngestionService(RagDbContext db, DocumentSyncService syncService, DocumentExtractor textExtractor, DocumentChunker chunker, IEmbeddingService embeddingService, ILogger<DocumentIngestionService> logger)
     {
         _db = db;
@@ -40,12 +60,10 @@ public class DocumentIngestionService
     }
 
     #region Public Methods
+
     /// <summary>
-    /// Process and create chunks of the docs
+    /// Syncs a project's files and processes new/changed documents (chunk + embed).
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<IngestionResult> ProcessProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         var syncResult = await _syncService.SyncProjectAsync(projectId, cancellationToken);
@@ -80,14 +98,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// Process and rechunks the docs
+    /// Re-chunks all of a project's documents, replacing existing chunks.
     /// </summary>
-    /// <param name="projectId"></param>
-    /// <param name="chunkSize"></param>
-    /// <param name="overlap"></param>
-    /// <param name="minChunkChars"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     public async Task<int> RechunkProjectAsync(Guid projectId,  int chunkSize = 600, int overlap = 100, int minChunkChars = 150, CancellationToken cancellationToken = default)
     {
         var documents = await _db.Documents
@@ -122,7 +134,7 @@ public class DocumentIngestionService
 
                 var isExcel = IsExcel(document.FilePath);
 
-                foreach (var targetNs in TargetNamespaces(isExcel))
+                foreach (var targetNs in TargetNamespaces(document.FilePath))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var chunks = BuildChunksForNamespace(document, extractedDocument, isExcel, targetNs, chunkSize, overlap, minChunkChars);
@@ -149,14 +161,9 @@ public class DocumentIngestionService
     #region Private Methods
 
     /// <summary>
-    /// To process documents
+    /// Extracts, chunks, and embeds one document across its target namespaces.
     /// </summary>
-    /// <param name="document"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    private async Task ProcessDocumentAsync(
-        Models.Document document,
-        CancellationToken cancellationToken)
+    private async Task ProcessDocumentAsync(Models.Document document, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Processing document {FileName} into namespaces [{Ns}]", document.FileName, string.Join(", ", Namespaces.All));
 
@@ -171,7 +178,7 @@ public class DocumentIngestionService
 
         var isExcel = IsExcel(document.FilePath);
 
-        foreach (var targetNs in TargetNamespaces(isExcel))
+        foreach (var targetNs in TargetNamespaces(document.FilePath))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var chunks = BuildChunksForNamespace(document, extractedDocument, isExcel, targetNs);
@@ -184,16 +191,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// To build chunks for all namespaces
+    /// Builds chunks for a namespace: Excel gets its own chunker, others use the configured chunker.
     /// </summary>
-    /// <param name="document"></param>
-    /// <param name="extractedDocument"></param>
-    /// <param name="isExcel"></param>
-    /// <param name="ns"></param>
-    /// <param name="chunkSize"></param>
-    /// <param name="overlap"></param>
-    /// <param name="minChunkChars"></param>
-    /// <returns></returns>
     private List<DocumentChunk> BuildChunksForNamespace(Models.Document document, ExtractedDocument extractedDocument, bool isExcel, string ns, int chunkSize = 600, int overlap = 100, int minChunkChars = 150)
     {
         if (isExcel)
@@ -216,11 +215,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// To embed and add chunks
+    /// Generates embeddings for the chunks and stages them for saving.
     /// </summary>
-    /// <param name="chunks"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
     private async Task EmbedAndAddChunksAsync(List<DocumentChunk> chunks, CancellationToken cancellationToken)
     {
         foreach (var chunk in chunks)
@@ -234,10 +230,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// To check if file is excel or not
+    /// Checks whether the file is .xlsx or .xls.
     /// </summary>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
     private static bool IsExcel(string filePath)
     {
         var ext = Path.GetExtension(filePath);
@@ -246,12 +240,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// To create excel chunks
+    /// Builds chunks from an Excel document's extracted sections.
     /// </summary>
-    /// <param name="documentId"></param>
-    /// <param name="extractedDocument"></param>
-    /// <param name="ns"></param>
-    /// <returns></returns>
     private static List<DocumentChunk> CreateExcelChunks(Guid documentId, ExtractedDocument extractedDocument, string ns)
     {
         var rowsPerBlock = ExcelRowsPerBlock.TryGetValue(ns, out var r) ? r : 10;
@@ -259,7 +249,8 @@ public class DocumentIngestionService
         var schemaSections = extractedDocument.Sections
             .Where(s => s.ContentType is "ExcelWorksheet"
                             or "ExcelAggregates"
-                            or "ExcelColumn")
+                            or "ExcelColumn"
+                            or "ExcelNote")
             .ToList();
 
         var rowSections = extractedDocument.Sections
@@ -299,13 +290,8 @@ public class DocumentIngestionService
     }
 
     /// <summary>
-    /// To build excel chunk
+    /// Builds a chunk from an Excel schema/aggregate/column/note section.
     /// </summary>
-    /// <param name="documentId"></param>
-    /// <param name="ns"></param>
-    /// <param name="chunkIndex"></param>
-    /// <param name="section"></param>
-    /// <returns></returns>
     private static DocumentChunk BuildExcelChunk(Guid documentId, string ns, int chunkIndex, DocumentSection section)
     {
         var metadata = new Dictionary<string, string>(section.Metadata)
