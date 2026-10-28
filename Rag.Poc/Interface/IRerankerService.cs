@@ -1,12 +1,9 @@
-﻿using Rag.Poc.Models;
+﻿namespace Rag.Poc.Interface;
 
-namespace Rag.Poc.Interface;
-
+/// <summary>
+/// Provides the functionality of reranking of the chunks
+/// </summary>
 public interface IRerankerService
 {
-    Task<List<ScoredChunk>> RerankAsync(
-        string query,
-        List<ScoredChunk> candidates,
-        int topN,
-        CancellationToken cancellationToken = default);
+    Task<List<ScoredChunk>> RerankAsync(string query, List<ScoredChunk> candidates, int topN, CancellationToken cancellationToken = default);
 }

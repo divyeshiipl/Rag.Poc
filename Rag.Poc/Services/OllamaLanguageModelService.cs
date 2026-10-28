@@ -1,37 +1,29 @@
-﻿using Rag.Poc.Constants;
+﻿namespace Rag.Poc.Services;
 
-namespace Rag.Poc.Services;
-
+/// <summary>
+/// Generates answers by calling a local Ollama model with a grounded prompt built from document chunks.
+/// </summary>
 public sealed class OllamaLanguageModelService : ILanguageModelService
 {
     private readonly HttpClient _httpClient;
 
+    /// <summary>
+    /// Creates the service with an HTTP client pointing at the Ollama host.
+    /// </summary>
     public OllamaLanguageModelService(HttpClient httpClient)
     {
         _httpClient = httpClient;
     }
 
+    #region Public Methods
+
     /// <summary>
-    /// Generates an answer to a question based on the provided document chunks.
+    /// Answers the question using only the given chunks as context. If filters are present, the prompt switches to strict row-copying mode.
     /// </summary>
-    /// <param name="question"></param>
-    /// <param name="chunks"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    /// <exception cref="ArgumentException"></exception>
-    /// <exception cref="InvalidOperationException"></exception>
-    public async Task<string> GenerateAnswerAsync(
-    string question,
-    IReadOnlyList<DocumentChunk> chunks,
-    CancellationToken cancellationToken = default)
+    public async Task<string> GenerateAnswerAsync(string question, IReadOnlyList<DocumentChunk> chunks, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken = default)
     {
         var context = BuildContext(chunks);
-
-        var parts = question.Split(" | ", StringSplitOptions.RemoveEmptyEntries);
-        var multiNote = parts.Length > 1
-            ? $"This query contains {parts.Length} sub-questions. Answer each one separately, " +
-              $"using headings \"Answer 1:\", \"Answer 2:\", and so on."
-            : string.Empty;
+        var filterSection = BuildFilterSection(filters);
 
         var prompt = $"""
             You are an AI assistant answering questions about internal company documents.
@@ -39,30 +31,16 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             Answer using ONLY the provided context. Do not use outside knowledge.
             Do not invent facts.
 
-            If the context does not contain enough information, say exactly:
-            "The available documents do not provide enough information to answer this question."
+            {filterSection}
 
-            When the question is about rows in a spreadsheet:
-            - The context may contain a chunk labelled "Column: X". That chunk is a
-              complete list of Row N → value pairs for column X. Treat it as the
-              full set of rows that exist in column X.
-            - If the question filters on column X, list ONLY the rows whose value
-              in column X matches the requested value. Rows absent from the column
-              chunk must not be listed.
-            - If a row block contains a mix of matching and non-matching rows,
-              list only the matching rows.
-            - Use the exact column names shown in the block: Asset ID, Asset Name,
-              Category, Department, Location, Purchase Date, Purchase Cost ($),
-              Status. Do not use placeholder names.
-            - For count, sum, average, min, max, top N, bottom N questions, read
-              the value from the "Aggregates" chunk. Do not compute manually.
-
-            Format the answer as a plain list of rows, one row per line, using the
-            text from the block. Do not explain your reasoning. Do not restate
-            these instructions. Do not number your lines with "Step A", "Step B",
-            etc. — just give the answer.
-
-            {multiNote}
+            CONTEXT RULES:
+            - Read EVERY [Source N] block before answering.
+            - If two blocks answer different parts of the question, combine them.
+            - If a question asks "what are the N things" or "list all X", check EVERY
+              block for additional items. Do not stop at the first block that has an
+              answer.
+            - If the context does not contain enough information, say exactly:
+              "The available documents do not provide enough information to answer this question."
 
             CONTEXT:
             {context}
@@ -71,7 +49,6 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             {question}
 
             ANSWER:
-            /no_think
             """;
 
         var request = new
@@ -79,23 +56,22 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             model = RagConstants.Model,
             prompt,
             stream = false,
-            keep_alive = "10m",
+            keep_alive = "1h",
             think = false,
             options = new
             {
-                temperature = 1.0,
+                temperature = 0,
                 num_predict = RagConstants.NumPredict,
-                num_ctx = RagConstants.NumCtx
+                num_ctx = RagConstants.NumCtx,
+                num_thread = Math.Max(2, Environment.ProcessorCount / 2),
+                num_batch = 128
             }
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            "/api/generate", request, cancellationToken);
-
+        using var response = await _httpClient.PostAsJsonAsync("/api/generate", request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(
-            cancellationToken: cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<OllamaResponse>(cancellationToken: cancellationToken);
 
         if (string.IsNullOrWhiteSpace(result?.Response))
             throw new InvalidOperationException("Ollama returned an empty response.");
@@ -103,6 +79,45 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         return result.Response.Trim();
     }
 
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Builds the filter/instruction block; tells the model to copy each "Row N:" line verbatim and add a "Found N rows." line. Returns empty if no filters.
+    /// </summary>
+    private static string BuildFilterSection(IReadOnlyList<QueryFilter>? filters)
+    {
+        if (filters is not { Count: > 0 })
+            return string.Empty;
+
+        var filterDesc = string.Join(" AND ", filters.Select(f => f.Operator == "between"
+                ? $"{f.Column} between \"{f.Value}\" and \"{f.UpperBound}\""
+                : $"{f.Column} {f.Operator} \"{f.Value}\""));
+
+        return $"""
+        FILTER: {filterDesc}
+
+        The context contains a block labeled "VERIFIED MATCHING ROWS".
+        Every "Row N:" line inside that block is a verified match.
+
+        OUTPUT — exactly this:
+        1. Copy each "Row N:" line from the block, verbatim, one per output line.
+        2. Do not skip any row.
+        3. Do not output anything except the row lines and a final count line.
+        4. The final line is: "Found N rows." where N = number of rows copied.
+
+        Example for a block with 3 rows:
+          Row 5: Asset ID: AST-1003 | ...
+          Row 10: Asset ID: AST-1008 | ...
+          Row 11: Asset ID: AST-1009 | ...
+          Found 3 rows.
+        """;
+    }
+
+    /// <summary>
+    /// Builds numbered [Source N] blocks from the chunks, with per-type length caps and a total size limit.
+    /// </summary>
     private static string BuildContext(IReadOnlyList<DocumentChunk> chunks)
     {
         var sb = new StringBuilder();
@@ -114,7 +129,13 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
 
             var content = chunk.Content ?? string.Empty;
             var isExcel = chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true;
-            var cap = isExcel ? 6_000 : RagConstants.MaxCharsPerChunk;
+            var isColumnIndex = chunk.MetadataJson?.Contains("\"RecordType\":\"ExcelColumn\"") == true;
+
+            int cap = isColumnIndex
+                ? int.MaxValue
+                : isExcel ? 2_000
+                : RagConstants.MaxCharsPerChunk;
+
             if (content.Length > cap) content = content[..cap];
 
             sb.AppendLine($"[Source {i++}]");
@@ -128,4 +149,6 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
 
         return sb.ToString();
     }
+
+    #endregion
 }

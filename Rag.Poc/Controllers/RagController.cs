@@ -1,10 +1,8 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Rag.Poc.Constants;
-using Rag.Poc.Enums;
-using System.Diagnostics;
+﻿namespace Rag.Poc.Controllers;
 
-namespace Rag.Poc.Controllers;
-
+/// <summary>
+/// Provides RAG endpoints for answering questions and inspecting retrieval results.
+/// </summary>
 [Route("api/[controller]")]
 [ApiController]
 public class RagController : ControllerBase
@@ -13,22 +11,21 @@ public class RagController : ControllerBase
     private readonly DocumentSearchService _searchService;
     private readonly IRetrievalPlanner _retrievalPlanner;
 
-    public RagController(
-        RagAnswerService ragAnswerService,
-        DocumentSearchService searchService,
-        IRetrievalPlanner retrievalPlanner)
+    /// <summary>
+    /// Creates the controller with the answer, search, and planner services.
+    /// </summary>
+    public RagController(RagAnswerService ragAnswerService, DocumentSearchService searchService, IRetrievalPlanner retrievalPlanner)
     {
         _ragAnswerService = ragAnswerService;
         _searchService = searchService;
         _retrievalPlanner = retrievalPlanner;
     }
 
+    /// <summary>
+    /// Answers a question using RAG over company documents.
+    /// </summary>
     [HttpGet]
-    public async Task<IActionResult> Ask(
-       [FromQuery] string question,
-       [FromQuery] int? topK = null,
-       [FromQuery] string? ns = null,
-       CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Ask([FromQuery] string question, [FromQuery] int? topK = null, [FromQuery] string? ns = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
             return BadRequest(new { error = "Question cannot be empty." });
@@ -69,34 +66,24 @@ public class RagController : ControllerBase
             return StatusCode(499);
         }
 
-        var effectiveTopK = topK ?? plan.TopK ?? 6;
+        var effectiveTopK = topK ?? plan.TopK ?? RagConstants.DefaultTopK;
 
         var effectiveNamespaces = !string.IsNullOrWhiteSpace(ns)
             ? new List<string> { ns }
             : plan.Namespaces.Count > 0
                 ? plan.Namespaces.ToList()
-                : new List<string> { "default" };
+                : new List<string> { Namespaces.Default };
 
-        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive
-                        && plan.Filters is { Count: > 0 })
-                ? new List<string> { Namespaces.Structural }
-                : effectiveNamespaces;
+        var namespacesToQuery = (plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 })
+         ? new List<string> { Namespaces.Structural }
+         : effectiveNamespaces;
 
         var retrieval = Stopwatch.StartNew();
-        var chunks = new List<ScoredChunk>();
+        List<ScoredChunk> chunks;
 
         try
         {
-            foreach (var nsName in namespacesToQuery)
-            {
-                var hits = await _searchService.SearchAsync(
-                    plan with { Namespaces = new List<string> { nsName } },
-                    effectiveTopK,
-                    nsName,
-                    cancellationToken);
-
-                chunks.AddRange(hits);
-            }
+            chunks = await _searchService.SearchAsync(plan with { Namespaces = namespacesToQuery }, effectiveTopK, requestedNamespace: null, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -104,21 +91,25 @@ public class RagController : ControllerBase
         }
         retrieval.Stop();
 
-        var isFiltered = plan.Mode == RetrievalMode.Exhaustive
-                         && plan.Filters is { Count: > 0 };
+        var isFiltered = plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 };
         var isFullTable = plan.Mode == RetrievalMode.FullTable;
         var isAggregate = plan.Mode == RetrievalMode.Aggregate;
 
-        var minScore = isFiltered || isFullTable || isAggregate
-            ? 0.0
-            : (plan.MinScore ?? 0.15);
-
         var deduped = chunks
-            .Where(c => c.Score >= minScore)
-            .GroupBy(c => (c.Chunk.DocumentId, c.Chunk.ChunkIndex, c.Chunk.Namespace))
-            .Select(g => g.OrderByDescending(c => c.Score).First())
-            .OrderByDescending(c => c.Score)
-            .ToList();
+        .GroupBy(c => BuildDedupeKey(c.Chunk))
+        .Select(g =>
+        {
+            var best = g.OrderByDescending(x => x.Score).First();
+            return new ScoredChunk
+            {
+                Chunk = best.Chunk,
+                Score = best.Score,
+                Source = string.Join("+", g.Select(x => x.Source).Distinct()),
+                SubQuery = best.SubQuery
+            };
+        })
+        .OrderByDescending(c => c.Score)
+        .ToList();
 
         if (!isFiltered && !isFullTable && !isAggregate)
         {
@@ -144,10 +135,21 @@ public class RagController : ControllerBase
 
         try
         {
-            answer = await _ragAnswerService.AnswerFromChunksAsync(
-                question,
-                deduped.Select(x => x.Chunk).ToList(),
-                cancellationToken);
+            var chunksForLlm = deduped
+                .Where(x => x.Source != "filtered-column")
+                .Select(x => x.Chunk)
+                .ToList();
+
+            var isFilteredQuery = plan.Mode == RetrievalMode.Exhaustive && plan.Filters is { Count: > 0 };
+
+            if (isFilteredQuery && chunksForLlm.Count == 1 && chunksForLlm[0].Content?.Contains("VERIFIED MATCHING ROWS") == true)
+            {
+                answer = await GenerateBatchedFilteredAnswerAsync(question, chunksForLlm[0], plan.Filters, cancellationToken);
+            }
+            else
+            {
+                answer = await _ragAnswerService.AnswerFromChunksAsync(question, chunksForLlm, plan.Filters, cancellationToken);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -183,13 +185,11 @@ public class RagController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Returns the raw chunks matched for a question, for debugging.
+    /// </summary>
     [HttpGet("inspect")]
-    public async Task<IActionResult> InspectRetrieval(
-        [FromQuery] string question,
-        [FromQuery] int topK = 10,
-        [FromQuery] string? ns = null,
-        [FromQuery] bool hybrid = true,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> InspectRetrieval([FromQuery] string question, [FromQuery] int topK = 10, [FromQuery] string? ns = null, [FromQuery] bool hybrid = true, CancellationToken cancellationToken = default)
     {
         var chunks = await _searchService.SearchDetailedAsync(new RetrievalOptions
         {
@@ -221,4 +221,167 @@ public class RagController : ControllerBase
             })
         });
     }
+
+    #region Private Methods
+
+    /// <summary>
+    /// Answers a filtered query by batching rows through the LLM and merging results.
+    /// </summary>
+    private async Task<string> GenerateBatchedFilteredAnswerAsync(string question, DocumentChunk filteredChunk, IReadOnlyList<QueryFilter>? filters, CancellationToken cancellationToken)
+    {
+        const int MaxRowsPerBatch = 8;
+
+        var lines = (filteredChunk.Content ?? "").Split('\n');
+        var headerLines = new List<string>();
+        var rowLines = new List<string>();
+
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
+                rowLines.Add(line.TrimEnd());
+            else if (!string.IsNullOrWhiteSpace(line))
+                headerLines.Add(line.TrimEnd());
+        }
+
+        if (rowLines.Count == 0)
+            return "I couldn't find relevant information in our company documents.";
+
+        if (rowLines.Count <= MaxRowsPerBatch)
+        {
+            return await _ragAnswerService.AnswerFromChunksAsync(question, new[] { filteredChunk }, filters, cancellationToken);
+        }
+
+        var batches = new List<List<string>>();
+        for (var i = 0; i < rowLines.Count; i += MaxRowsPerBatch)
+            batches.Add(rowLines.Skip(i).Take(MaxRowsPerBatch).ToList());
+
+        var allRows = new List<string>();
+
+        foreach (var batch in batches)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batchContent = new StringBuilder();
+            foreach (var h in headerLines) batchContent.AppendLine(h);
+            batchContent.AppendLine();
+            foreach (var row in batch) batchContent.AppendLine(row);
+
+            var batchChunk = new DocumentChunk
+            {
+                Id = filteredChunk.Id,
+                DocumentId = filteredChunk.DocumentId,
+                ChunkIndex = filteredChunk.ChunkIndex,
+                Content = batchContent.ToString(),
+                TokenCount = batchContent.Length / 4,
+                SectionTitle = filteredChunk.SectionTitle,
+                SourceLocation = filteredChunk.SourceLocation,
+                Namespace = filteredChunk.Namespace,
+                MetadataJson = filteredChunk.MetadataJson,
+                Document = filteredChunk.Document
+            };
+
+            var batchAnswer = await _ragAnswerService.AnswerFromChunksAsync(
+                question, new[] { batchChunk }, filters, cancellationToken);
+
+            var extractedFromBatch = ExtractRowLines(batchAnswer);
+
+            if (extractedFromBatch.Count == 0)
+                extractedFromBatch = batch;
+
+            allRows.AddRange(extractedFromBatch);
+        }
+
+        var dedupedRows = new Dictionary<int, string>();
+        foreach (var row in allRows)
+        {
+            var num = ExtractRowNumber(row);
+            if (num > 0 && !dedupedRows.ContainsKey(num))
+                dedupedRows[num] = row;
+        }
+
+        var sb = new StringBuilder();
+        foreach (var kvp in dedupedRows.OrderBy(k => k.Key))
+            sb.AppendLine(kvp.Value);
+        sb.AppendLine();
+        sb.AppendLine($"Found {dedupedRows.Count} rows.");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Pulls "Row N" lines out of an LLM answer and strips markdown.
+    /// </summary>
+    private static List<string> ExtractRowLines(string answer)
+    {
+        var rows = new List<string>();
+        if (string.IsNullOrWhiteSpace(answer)) return rows;
+
+        foreach (var rawLine in answer.Split('\n'))
+        {
+            var line = rawLine.Trim();
+
+            if (line.StartsWith("**")) line = line.TrimStart('*');
+            if (line.StartsWith("- ") || line.StartsWith("* ") || line.StartsWith("• "))
+                line = line.Substring(2).Trim();
+            if (line.Length > 2 && char.IsDigit(line[0]) && line[1] == '.' && line[2] == ' ')
+                line = line.Substring(3).Trim();
+            if (line.EndsWith("**")) line = line.TrimEnd('*');
+
+            if (line.StartsWith("Row ", StringComparison.OrdinalIgnoreCase))
+                rows.Add(line.TrimEnd());
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Reads the number N from a "Row N: ..." line.
+    /// </summary>
+    private static int ExtractRowNumber(string rowLine)
+    {
+        if (string.IsNullOrWhiteSpace(rowLine)) return -1;
+        var colon = rowLine.IndexOf(':');
+        if (colon < 4) return -1;
+        var numPart = rowLine.Substring(4, colon - 4).Trim();
+        return int.TryParse(numPart, out var n) ? n : -1;
+    }
+
+    /// <summary>
+    /// Checks whether a chunk came from an Excel worksheet.
+    /// </summary>
+    private static bool IsExcelChunk(DocumentChunk chunk)
+    {
+        if (chunk.SourceLocation?.StartsWith("Worksheet:", StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        if (chunk.MetadataJson?.Contains("\"RecordType\":\"Excel", StringComparison.Ordinal) == true)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Builds a key used to remove duplicate chunks.
+    /// </summary>
+    private static string BuildDedupeKey(DocumentChunk chunk)
+    {
+        if (IsExcelChunk(chunk))
+            return $"excel|{chunk.DocumentId}|{chunk.ChunkIndex}|{chunk.Namespace}";
+
+        return $"prose|{ComputeContentHash(chunk.Content)}";
+    }
+
+    /// <summary>
+    /// Returns the SHA-256 hash of a chunk's content.
+    /// </summary>
+    private static string ComputeContentHash(string? content)
+    {
+        if (string.IsNullOrEmpty(content)) return string.Empty;
+
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(content.Trim()));
+        return Convert.ToHexString(bytes);
+    }
+
+    #endregion
 }

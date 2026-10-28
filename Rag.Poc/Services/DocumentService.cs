@@ -1,19 +1,26 @@
-﻿using System.Security.Cryptography;
+﻿namespace Rag.Poc.Services;
 
-namespace Rag.Poc.Services;
-
+/// <summary>
+/// Manages document records: finds or creates them, and detects content changes by file hash.
+/// </summary>
 public class DocumentService
 {
     private readonly RagDbContext _db;
 
+    /// <summary>
+    /// Creates the service with the database context.
+    /// </summary>
     public DocumentService(RagDbContext db)
     {
         _db = db;
     }
 
-    public async Task<Document> GetOrCreateAsync(
-        Guid projectId,
-        string filePath)
+    #region Public Methods
+
+    /// <summary>
+    /// Gets the document for a project and file path, or creates it. If the file hash changed, updates the hash and resets status to "Pending".
+    /// </summary>
+    public async Task<Models.Document> GetOrCreateAsync(Guid projectId, string filePath)
     {
         var existing = await _db.Documents
             .FirstOrDefaultAsync(x =>
@@ -35,7 +42,7 @@ public class DocumentService
             return existing;
         }
 
-        var document = new Document
+        var document = new Models.Document
         {
             Id = Guid.NewGuid(),
             ProjectId = projectId,
@@ -55,28 +62,31 @@ public class DocumentService
         return document;
     }
 
-    private static async Task<string> CalculateHashAsync(
-        string filePath)
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Computes the SHA-256 hash of a file as an uppercase hex string.
+    /// </summary>
+    private static async Task<string> CalculateHashAsync(string filePath)
     {
-        await using var stream =
-            File.OpenRead(filePath);
-
+        await using var stream = File.OpenRead(filePath);
         var hash = await SHA256.HashDataAsync(stream);
-
         return Convert.ToHexString(hash);
     }
 
-    private static string GetContentType(
-        string filePath)
+    /// <summary>
+    /// Guesses the MIME content type from the file extension (falls back to application/octet-stream).
+    /// </summary>
+    private static string GetContentType(string filePath)
     {
         return Path.GetExtension(filePath)
             .ToLowerInvariant() switch
         {
             ".pdf" => "application/pdf",
-            ".docx" =>
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ".xlsx" =>
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ".txt" => "text/plain",
             ".html" => "text/html",
             ".htm" => "text/html",
@@ -84,4 +94,6 @@ public class DocumentService
             _ => "application/octet-stream"
         };
     }
+
+    #endregion
 }

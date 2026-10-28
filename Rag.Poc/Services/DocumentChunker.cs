@@ -1,16 +1,16 @@
-﻿using System.Text.Json;
+﻿namespace Rag.Poc.Services;
 
-namespace Rag.Poc.Services;
-
+/// <summary>
+/// Splits extracted documents into smaller overlapping chunks for embedding and retrieval.
+/// </summary>
 public class DocumentChunker
 {
-    public List<DocumentChunk> Chunk(
-        Guid documentId,
-        ExtractedDocument document,
-        int chunkSize = 600,
-        int overlap = 100,
-        int minChunkChars = 150,
-        string ns = "default")
+    #region Public Methods
+
+    /// <summary>
+    /// Chunks every section of a document into <see cref="DocumentChunk"/> instances.
+    /// </summary>
+    public List<DocumentChunk> Chunk(Guid documentId, ExtractedDocument document, int chunkSize = 600, int overlap = 100, int minChunkChars = 150, string ns = "default")
     {
         if (chunkSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(chunkSize));
@@ -26,22 +26,21 @@ public class DocumentChunker
 
         foreach (var section in document.Sections)
         {
-            var sectionChunks = ChunkSection(
-                documentId, section, chunkSize, overlap, minChunkChars, ns, ref chunkIndex);
+            var sectionChunks = ChunkSection(documentId, section, chunkSize, overlap, minChunkChars, ns, ref chunkIndex);
             chunks.AddRange(sectionChunks);
         }
 
         return chunks;
     }
 
-    private static List<DocumentChunk> ChunkSection(
-        Guid documentId,
-        DocumentSection section,
-        int chunkSize,
-        int overlap,
-        int minChunkChars,
-        string ns,
-        ref int chunkIndex)
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Chunks a single section using logical blocks, overlap, and large-block splitting.
+    /// </summary>
+    private static List<DocumentChunk> ChunkSection(Guid documentId, DocumentSection section, int chunkSize, int overlap, int minChunkChars, string ns, ref int chunkIndex)
     {
         var chunks = new List<DocumentChunk>();
 
@@ -58,8 +57,7 @@ public class DocumentChunker
         {
             if (block.Length > chunkSize)
             {
-                FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-                    minChunkChars, ns, ref currentLength, ref chunkIndex);
+                FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
                 var smallerBlocks = SplitLargeBlock(block, chunkSize);
                 foreach (var smallerBlock in smallerBlocks)
@@ -69,15 +67,12 @@ public class DocumentChunker
                 continue;
             }
 
-            var additionalLength = currentBlocks.Count == 0
-                ? block.Length
-                : block.Length + 2;
+            var additionalLength = currentBlocks.Count == 0 ? block.Length : block.Length + 2;
 
             if (currentLength + additionalLength > chunkSize)
             {
                 var overlapBlocks = GetOverlapBlocks(currentBlocks, overlap);
-                FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-                    minChunkChars, ns, ref currentLength, ref chunkIndex);
+                FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
                 currentBlocks = overlapBlocks;
                 currentLength = CalculateLength(currentBlocks);
@@ -93,12 +88,14 @@ public class DocumentChunker
             currentLength = CalculateLength(currentBlocks);
         }
 
-        FlushCurrentChunk(chunks, documentId, section, currentBlocks,
-            minChunkChars, ns, ref currentLength, ref chunkIndex);
+        FlushCurrentChunk(chunks, documentId, section, currentBlocks, minChunkChars, ns, ref currentLength, ref chunkIndex);
 
         return chunks;
     }
 
+    /// <summary>
+    /// Joins a section's heading and content into one text.
+    /// </summary>
     private static string BuildSectionText(DocumentSection section)
     {
         var heading = section.Heading?.Trim();
@@ -110,6 +107,9 @@ public class DocumentChunker
         return $"{heading}\n\n{content}";
     }
 
+    /// <summary>
+    /// Splits text into logical blocks (paragraphs, lists, tables, sentences).
+    /// </summary>
     private static List<string> SplitIntoLogicalBlocks(string text)
     {
         var paragraphs = Regex
@@ -121,7 +121,7 @@ public class DocumentChunker
         var result = new List<string>();
         foreach (var paragraph in paragraphs)
         {
-            if (ContainsNumberedList(paragraph))
+            if (ContainsNumberedList(paragraph) || LooksLikeTable(paragraph))
             {
                 result.Add(paragraph);
                 continue;
@@ -130,12 +130,53 @@ public class DocumentChunker
             var sentences = SplitSentences(paragraph);
             result.AddRange(sentences);
         }
+        return MergeListBlocks(result);
+    }
+
+    /// <summary>
+    /// Checks whether the text looks like a table (lines containing a pipe).
+    /// </summary>
+    private static bool LooksLikeTable(string text) => text.Contains('|') && Regex.IsMatch(text, @"(?m)^\S.*\|.*\S");
+
+    /// <summary>
+    /// Checks whether the text contains a numbered or bulleted list item.
+    /// </summary>
+    private static bool ContainsNumberedList(string text) => Regex.IsMatch(text, @"(?m)^\s*(?:\d+[\.\)]|[-•*])\s+\S");
+
+    /// <summary>
+    /// Joins consecutive list-item blocks so lists stay together.
+    /// </summary>
+    private static List<string> MergeListBlocks(List<string> blocks)
+    {
+        var result = new List<string>();
+        var current = new List<string>();
+
+        foreach (var block in blocks)
+        {
+            var isListItem = Regex.IsMatch(block, @"(?m)^\s*(?:\d+[\.\)]|[-•*])\s+\S");
+            if (isListItem)
+            {
+                current.Add(block);
+            }
+            else
+            {
+                if (current.Count > 0)
+                {
+                    result.Add(string.Join("\n", current));
+                    current.Clear();
+                }
+                result.Add(block);
+            }
+        }
+        if (current.Count > 0)
+            result.Add(string.Join("\n", current));
+
         return result;
     }
 
-    private static bool ContainsNumberedList(string text)
-        => Regex.IsMatch(text, @"(?m)^\d+[\.\)]\s+");
-
+    /// <summary>
+    /// Splits a paragraph into individual sentences.
+    /// </summary>
     private static List<string> SplitSentences(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
@@ -147,6 +188,9 @@ public class DocumentChunker
             .ToList();
     }
 
+    /// <summary>
+    /// Splits an oversized block into word-bounded pieces that fit the chunk size.
+    /// </summary>
     private static List<string> SplitLargeBlock(string block, int chunkSize)
     {
         var words = block.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -172,6 +216,9 @@ public class DocumentChunker
         return chunks;
     }
 
+    /// <summary>
+    /// Picks the trailing blocks to carry over as overlap into the next chunk.
+    /// </summary>
     private static List<string> GetOverlapBlocks(List<string> blocks, int overlap)
     {
         if (blocks.Count == 0 || overlap <= 0) return [];
@@ -191,15 +238,10 @@ public class DocumentChunker
         return result;
     }
 
-    private static void FlushCurrentChunk(
-        List<DocumentChunk> chunks,
-        Guid documentId,
-        DocumentSection section,
-        List<string> blocks,
-        int minChunkChars,
-        string ns,
-        ref int currentLength,
-        ref int chunkIndex)
+    /// <summary>
+    /// Emits the buffered blocks as a chunk (merging into the previous chunk if too small), then clears the buffer.
+    /// </summary>
+    private static void FlushCurrentChunk(List<DocumentChunk> chunks, Guid documentId, DocumentSection section, List<string> blocks, int minChunkChars, string ns, ref int currentLength, ref int chunkIndex)
     {
         if (blocks.Count == 0)
         {
@@ -209,31 +251,54 @@ public class DocumentChunker
 
         var content = string.Join("\n\n", blocks).Trim();
 
-        if (!string.IsNullOrWhiteSpace(content) && content.Length >= minChunkChars)
+        if (string.IsNullOrWhiteSpace(content))
         {
-            chunks.Add(CreateChunk(documentId, section, content, ns, chunkIndex++));
-        }
-        else if (!string.IsNullOrWhiteSpace(content))
-        {
-            chunks.Add(CreateChunk(documentId, section, content, ns, chunkIndex++));
+            blocks.Clear();
+            currentLength = 0;
+            return;
         }
 
+        if (content.Length < minChunkChars && chunks.Count > 0 && chunks[^1].DocumentId == documentId)
+        {
+            var previous = chunks[^1];
+            var mergedContent = previous.Content + "\n\n" + content;
+
+            chunks[^1] = new DocumentChunk
+            {
+                Id = previous.Id,
+                DocumentId = previous.DocumentId,
+                ChunkIndex = previous.ChunkIndex,
+                Content = mergedContent,
+                TokenCount = (int)Math.Ceiling(mergedContent.Length / 4.0),
+                SectionTitle = previous.SectionTitle,
+                SourceLocation = previous.SourceLocation,
+                Namespace = previous.Namespace,
+                MetadataJson = previous.MetadataJson
+            };
+
+            blocks.Clear();
+            currentLength = 0;
+            return;
+        }
+
+        chunks.Add(CreateChunk(documentId, section, content, ns, chunkIndex++));
         blocks.Clear();
         currentLength = 0;
     }
 
+    /// <summary>
+    /// Gets the total length of the blocks, counting the separator between them.
+    /// </summary>
     private static int CalculateLength(List<string> blocks)
     {
         if (blocks.Count == 0) return 0;
         return blocks.Sum(x => x.Length) + ((blocks.Count - 1) * 2);
     }
 
-    private static DocumentChunk CreateChunk(
-        Guid documentId,
-        DocumentSection section,
-        string content,
-        string ns,
-        int chunkIndex)
+    /// <summary>
+    /// Builds a <see cref="DocumentChunk"/> from the content and section metadata.
+    /// </summary>
+    private static DocumentChunk CreateChunk(Guid documentId, DocumentSection section, string content, string ns, int chunkIndex)
     {
         return new DocumentChunk
         {
@@ -245,15 +310,18 @@ public class DocumentChunker
             SectionTitle = section.Heading,
             SourceLocation = section.SourceLocation,
             Namespace = ns,
-            MetadataJson = section.Metadata.Count == 0
-                ? null
-                : JsonSerializer.Serialize(section.Metadata)
+            MetadataJson = section.Metadata.Count == 0 ? null : JsonSerializer.Serialize(section.Metadata)
         };
     }
 
+    /// <summary>
+    /// Estimates token count as roughly four characters per token.
+    /// </summary>
     private static int EstimateTokenCount(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return 0;
         return (int)Math.Ceiling(text.Length / 4.0);
     }
+
+    #endregion
 }

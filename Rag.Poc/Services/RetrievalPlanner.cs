@@ -1,42 +1,38 @@
-﻿using Rag.Poc.Constants;
-using Rag.Poc.Enums;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+﻿namespace Rag.Poc.Models;
 
-namespace Rag.Poc.Models;
+/// <summary>
+/// A single structured filter for a data table, e.g. Category = "IT Hardware" or Cost between 100 and 500.
+/// </summary>
+public sealed record QueryFilter(string Column, string Operator, string Value, string? UpperBound = null);
 
-public sealed record QueryFilter(
-    string Column,
-    string Operator,
-    string Value,
-    string? UpperBound = null);
+/// <summary>
+/// Describes how a query should be retrieved: search text, top-K, namespaces, mode, and any filters.
+/// </summary>
+public sealed record RetrievalPlan(string SearchQuery, int? TopK, List<string> Namespaces, RetrievalMode Mode, string? FilterText = null,double? MinScore = null, bool Rewritten = false, IReadOnlyList<QueryFilter>? Filters = null);
 
-public sealed record RetrievalPlan(
-    string SearchQuery,
-    int? TopK,
-    List<string> Namespaces,
-    RetrievalMode Mode,
-    string? FilterText = null,
-    double? MinScore = null,
-    bool Rewritten = false,
-    IReadOnlyList<QueryFilter>? Filters = null);
-
+/// <summary>
+/// Uses a local Ollama model to pick a retrieval strategy for a question, handling meta, sub-questions, and merge.
+/// </summary>
 public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<OllamaRetrievalPlanner> _logger;
 
-    public OllamaRetrievalPlanner(
-        HttpClient httpClient,
-        ILogger<OllamaRetrievalPlanner> logger)
+    /// <summary>
+    /// Creates the planner with an HTTP client pointing at the Ollama host and a logger.
+    /// </summary>
+    public OllamaRetrievalPlanner(HttpClient httpClient, ILogger<OllamaRetrievalPlanner> logger)
     {
         _httpClient = httpClient;
         _logger = logger;
     }
 
-    public async Task<RetrievalPlan> CreatePlanAsync(
-        string question,
-        CancellationToken cancellationToken = default)
+    #region Public Methods
+
+    /// <summary>
+    /// Builds a retrieval plan for the question (meta, single, or multi-part).
+    /// </summary>
+    public async Task<RetrievalPlan> CreatePlanAsync(string question, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question))
             throw new ArgumentException("Question cannot be empty.", nameof(question));
@@ -51,8 +47,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         if (subQuestions.Count == 1)
             return await PlanOneAsync(subQuestions[0], cancellationToken);
 
-        _logger.LogInformation(
-            "Multi-part question: {Count} sub-questions detected.", subQuestions.Count);
+        _logger.LogInformation("Multi-part question: {Count} sub-questions detected.", subQuestions.Count);
 
         var subPlans = new List<RetrievalPlan>(subQuestions.Count);
         foreach (var sub in subQuestions)
@@ -61,6 +56,13 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return MergeSubPlans(cleaned, subQuestions, subPlans);
     }
 
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Removes leading document-reference phrases (e.g. "According to the SOP, ...") if the rest is meaningful.
+    /// </summary>
     private static string StripDocumentReference(string question)
     {
         var patterns = new[]
@@ -73,8 +75,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         foreach (var p in patterns)
         {
-            var m = Regex.Match(question, p,
-                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            var m = Regex.Match(question, p, RegexOptions.IgnoreCase | RegexOptions.Singleline);
             if (m.Success)
             {
                 var q = m.Groups["q"].Value.Trim();
@@ -86,6 +87,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return question;
     }
 
+    /// <summary>
+    /// Splits a question into sub-questions by question marks, list markers, or a single "and"/"or".
+    /// </summary>
     private static List<string> SplitSubQuestions(string input)
     {
         var qmParts = input
@@ -104,9 +108,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             for (int i = 0; i < markerPositions.Count; i++)
             {
                 var start = markerPositions[i];
-                var end = i + 1 < markerPositions.Count
-                    ? markerPositions[i + 1]
-                    : input.Length;
+                var end = i + 1 < markerPositions.Count ? markerPositions[i + 1] : input.Length;
 
                 var piece = input[start..end].Trim().TrimEnd('.', '?', '!', ':', ';');
                 if (piece.Length > 0) parts.Add(piece);
@@ -120,15 +122,13 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             var idx = input.IndexOf(connector, StringComparison.OrdinalIgnoreCase);
             if (idx < 0) continue;
 
-            var secondIdx = input.IndexOf(
-                connector, idx + connector.Length, StringComparison.OrdinalIgnoreCase);
+            var secondIdx = input.IndexOf(connector, idx + connector.Length, StringComparison.OrdinalIgnoreCase);
             if (secondIdx >= 0) continue;
 
             var left = input[..idx].Trim();
             var right = input[(idx + connector.Length)..].Trim();
 
-            if (left.Length >= 8 && right.Length >= 8
-                && left.Any(char.IsLetter) && right.Any(char.IsLetter))
+            if (left.Length >= 8 && right.Length >= 8 && left.Any(char.IsLetter) && right.Any(char.IsLetter))
             {
                 return new List<string> { TrimTrailing(left), TrimTrailing(right) };
             }
@@ -137,6 +137,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return new List<string> { input };
     }
 
+    /// <summary>
+    /// Finds positions of list markers (numbered or bulleted) and returns where each item's content begins.
+    /// </summary>
     private static List<int> FindListMarkerPositions(string input)
     {
         var positions = new List<int>();
@@ -186,18 +189,25 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return positions;
     }
 
-    private static bool IsMarkerPunctuation(char c) =>
-        c == '.' || c == ')' || c == ']' || c == ':' || c == '•' || c == '*' || c == '-';
+    /// <summary>
+    /// Checks whether a char can end a list marker (., ), ], :, •, *, -).
+    /// </summary>
+    private static bool IsMarkerPunctuation(char c) =>  c == '.' || c == ')' || c == ']' || c == ':' || c == '•' || c == '*' || c == '-';
 
-    private static bool IsBareBullet(char c) =>
-        c == '•' || c == '*' || c == '-';
+    /// <summary>
+    /// Checks whether a char is a bare bullet (•, *, -).
+    /// </summary>
+    private static bool IsBareBullet(char c) => c == '•' || c == '*' || c == '-';
 
-    private static string TrimTrailing(string s) =>
-        s.TrimEnd('.', '?', '!', ':', ';', ' ', '\t', '\n', '\r');
+    /// <summary>
+    /// Trims trailing punctuation and whitespace.
+    /// </summary>
+    private static string TrimTrailing(string s) => s.TrimEnd('.', '?', '!', ':', ';', ' ', '\t', '\n', '\r');
 
-    private async Task<RetrievalPlan> PlanOneAsync(
-        string subQuestion,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Asks the model to plan one sub-question; falls back to a semantic plan on failure.
+    /// </summary>
+    private async Task<RetrievalPlan> PlanOneAsync(string subQuestion, CancellationToken cancellationToken)
     {
         var prompt = BuildPrompt(subQuestion) + "\n/no_think";
 
@@ -213,16 +223,15 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             {
                 temperature = 0,
                 num_predict = 400,
-                top_p = 0.1
+                top_p = 0.1,
+                num_ctx = 4096
             }
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            "/api/generate", request, cancellationToken);
+        using var response = await _httpClient.PostAsJsonAsync("/api/generate", request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        var ollama = await response.Content.ReadFromJsonAsync<OllamaResponse>(
-            cancellationToken: cancellationToken);
+        var ollama = await response.Content.ReadFromJsonAsync<OllamaResponse>(cancellationToken: cancellationToken);
 
         if (string.IsNullOrWhiteSpace(ollama?.Response))
             return Fallback(subQuestion);
@@ -230,8 +239,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         PlannerJson? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<PlannerJson>(
-                ollama.Response,
+            parsed = JsonSerializer.Deserialize<PlannerJson>(ollama.Response,
                 new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true,
@@ -249,6 +257,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         return ToPlan(parsed, subQuestion);
     }
 
+    /// <summary>
+    /// Validates and normalizes the model's parsed plan into a RetrievalPlan.
+    /// </summary>
     private RetrievalPlan ToPlan(PlannerJson parsed, string original)
     {
         var mode = parsed.Mode ?? RetrievalMode.Semantic;
@@ -259,9 +270,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         if (mode == RetrievalMode.Aggregate)
         {
-            var aggQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery)
-                ? original
-                : parsed.SearchQuery.Trim();
+            var aggQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery) ? original : parsed.SearchQuery.Trim();
 
             return new RetrievalPlan(
                 SearchQuery: aggQuery,
@@ -294,37 +303,31 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         if (confidence < 0.6 && namespaces.Count == 1 && mode != RetrievalMode.Exhaustive)
         {
-            var extra = namespaces[0] switch
+            var extras = namespaces[0] switch
             {
-                Namespaces.Default => Namespaces.Large,
-                Namespaces.Structural => Namespaces.Default,
-                Namespaces.Large => Namespaces.Default,
-                _ => null
+                Namespaces.Default => new[] { Namespaces.Large, Namespaces.Structural },
+                Namespaces.Structural => new[] { Namespaces.Default, Namespaces.Large },
+                Namespaces.Large => new[] { Namespaces.Default, Namespaces.Structural },
+                _ => Array.Empty<string>()
             };
-            if (extra is not null && !namespaces.Contains(extra))
-                namespaces.Add(extra);
+
+            foreach (var extra in extras)
+                if (!namespaces.Contains(extra))
+                    namespaces.Add(extra);
         }
 
-        var filterText = string.IsNullOrWhiteSpace(parsed.FilterText)
-            ? null
-            : parsed.FilterText.Trim();
-
+        var filterText = string.IsNullOrWhiteSpace(parsed.FilterText) ? null : parsed.FilterText.Trim();
         var hasStructuredFilter = parsed.Filters is { Count: > 0 };
 
         if (mode == RetrievalMode.Exhaustive && filterText is null && !hasStructuredFilter)
         {
-            _logger.LogWarning(
-                "Exhaustive without filterText or structured filter; downgrading to Semantic.");
+            _logger.LogWarning("Exhaustive without filterText or structured filter; downgrading to Semantic.");
             mode = RetrievalMode.Semantic;
         }
 
-        int? topK = mode == RetrievalMode.Exhaustive
-            ? null
-            : Math.Clamp(parsed.TopK is > 0 ? parsed.TopK.Value : RagConstants.DefaultTopK, 3, RagConstants.MaxTopK);
+        int? topK = mode == RetrievalMode.Exhaustive ? null : Math.Clamp(parsed.TopK is > 0 ? parsed.TopK.Value : RagConstants.DefaultTopK, 3, RagConstants.MaxTopK);
 
-        var searchQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery)
-            ? original
-            : parsed.SearchQuery.Trim();
+        var searchQuery = string.IsNullOrWhiteSpace(parsed.SearchQuery) ? original : parsed.SearchQuery.Trim();
 
         if (searchQuery.Length < 15 && original.Length > searchQuery.Length * 2)
             searchQuery = original;
@@ -340,10 +343,10 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             Filters: ConvertFilters(parsed.Filters));
     }
 
-    private static RetrievalPlan MergeSubPlans(
-        string original,
-        List<string> subQuestions,
-        List<RetrievalPlan> subPlans)
+    /// <summary>
+    /// Merges sub-plans into one: highest-priority mode, unioned namespaces, max TopK, " | "-joined query, combined filters.
+    /// </summary>
+    private static RetrievalPlan MergeSubPlans(string original, List<string> subQuestions, List<RetrievalPlan> subPlans)
     {
         if (subPlans.Count == 1) return subPlans[0];
 
@@ -363,12 +366,10 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         if (namespaces.Count == 0)
             namespaces = new List<string> { Namespaces.Default };
 
-        var topK = Math.Clamp(
-            nonMeta.Where(p => p.TopK.HasValue)
+        var topK = Math.Clamp(nonMeta.Where(p => p.TopK.HasValue)
                 .Select(p => p.TopK!.Value)
                 .DefaultIfEmpty(RagConstants.DefaultTopK)
-                .Max(),
-            3, RagConstants.MaxTopK);
+                .Max(), 3, RagConstants.MaxTopK);
 
         var filters = nonMeta
             .Select(p => p.FilterText)
@@ -397,6 +398,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
             Filters: mergedFilters.Count == 0 ? null : mergedFilters);
     }
 
+    /// <summary>
+    /// Gives a merge priority to each mode (Exhaustive 4 &gt; Structural 3 &gt; Semantic 2 &gt; Meta 1).
+    /// </summary>
     private static int ModePriority(RetrievalMode m) => m switch
     {
         RetrievalMode.Exhaustive => 4,
@@ -406,12 +410,18 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         _ => 0
     };
 
+    /// <summary>
+    /// Checks whether a question is trivial (one word, no "?", no digits).
+    /// </summary>
     private static bool IsTrivial(string s)
     {
         var words = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         return words.Length <= 1 && !s.Contains('?') && !s.Any(char.IsDigit);
     }
 
+    /// <summary>
+    /// Builds a meta plan for greetings or trivial questions.
+    /// </summary>
     private static RetrievalPlan MetaPlan(string q) => new(
         SearchQuery: q,
         TopK: null,
@@ -421,6 +431,9 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         MinScore: null,
         Rewritten: false);
 
+    /// <summary>
+    /// Safe fallback: a semantic plan over default and large namespaces.
+    /// </summary>
     private static RetrievalPlan Fallback(string question) => new(
         SearchQuery: question,
         TopK: RagConstants.DefaultTopK,
@@ -429,12 +442,15 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         MinScore: 0.10,
         Rewritten: false);
 
+    /// <summary>
+    /// Builds the planner prompt describing the JSON schema and decision steps.
+    /// </summary>
     private static string BuildPrompt(string subQuestion) => $$"""
         You are the retrieval planner for an enterprise document search system.
         Given ONE user question, produce ONE JSON object describing how to search.
         Never answer the question. Never add prose.
 
-        OUTPUT:
+        OUTPUT SCHEMA:
         {
           "searchQuery": string,
           "topK": number | null,
@@ -452,171 +468,193 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
           "confidence": number
         }
 
+        ============================================================
         DECISION PROCEDURE — apply in order, stop at first match.
+        ============================================================
 
-        Step 1 — greeting, thanks, chit-chat, or about the assistant itself?
-                 -> mode = "Meta", namespaces = [], topK = null.
+        Step 1 — GREETING / CHIT-CHAT / META
+                 ("hi", "thanks", "who are you", "what can you do")
+                 -> mode = "Meta", namespaces = [], topK = null, filters = null.
 
-        Step 2 — a SPECIFIC VALUE that must be matched verbatim (letters mixed
-                 with digits, a symbol inside a word, a date/time/currency/
-                 phone/email, a non-Latin proper noun, a product code, a URL,
-                 a file path)?
-                 -> mode = "Exhaustive", filterText = that exact token,
-                    namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"], topK = null.
+        Step 2 — SPECIFIC IDENTIFIER
+                 A literal token that must be matched verbatim: an ID like
+                 "AST-1000", "MNT-2001", "user_id=42"; an email, a URL, a
+                 file path, a ticket number, a serial number, an order ID.
+                 -> mode = "Exhaustive",
+                    filterText = that exact token,
+                    namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"],
+                    topK = null,
+                    filters = null.
 
-        Step 3 — a SUBSET of records defined by a category or value
-                 ("customers in Germany", "tickets assigned to Alice",
-                 "assets over $5000", "purchases in March")?
-                 -> mode = "Exhaustive", filterText = the literal value.
+        Step 3 — EXPLICIT ROW FILTER
+                 A question that is CLEARLY about rows in a data table.
+                 Evidence that this step applies:
+                   - The question says "list all", "which", "how many",
+                     "show me rows", "filter", "find all", "give me all"
+                   - AND it names a value that must match an exact column
+                     (a category, status, department, location, date range,
+                     numeric range, employee, project)
+                   - AND the column name is a real column that would exist
+                     in a spreadsheet (e.g. "Category", "Status", "Department",
+                     "Location", "Purchase Date", "Cost ($)", "Assigned To")
 
-        Step 3b — PROCEDURE / SEQUENCE / ORDER OF STEPS / PROCESS / WORKFLOW
-                  ("what is the sequence", "how do we deploy", "what are the
-                  steps", "walk me through", "procedure for")?
-                 -> mode = "Semantic", topK = 10,
-                    namespaces = ["{{Namespaces.Default}}"].
+                 Examples that ARE row filters:
+                   "list all assets in the IT Hardware category"
+                   "which assets are Under Maintenance"
+                   "how many employees are in Finance"
+                   "orders over $5000 in March"
+                   "active assets in the HR department"
 
-        Step 3c — NARROW SUBSET OF POLICY / EXCEPTION / "beyond" / "additional" /
-                  "specifically for X" / "only for Y" / "unlike Z"?
-                  Questions that ask for something EXTRA or DIFFERENT from a
-                  baseline. These are hard to retrieve with a single embedding
-                  — you MUST decompose searchQuery into 2-3 alternative
-                  phrasings joined by " | ".
-                 -> mode = "Semantic", topK = 12,
-                    namespaces = ["{{Namespaces.Default}}"].
-                 -> searchQuery MUST contain " | " and 2-3 distinct sub-queries.
+                 Examples that are NOT row filters (do not emit filters):
+                   "does a deployment to QA require formal approval"
+                   "what is the process for emergency changes"
+                   "what does the SOP say about issuance"
+                   "who approves a production change"
+                   "what are the four environments"
+                   "is business approval required for UAT"
+                   "how do we roll back a deployment"
 
-        Step 3d — AGGREGATION / RANKING / SORTING / COMPARISON:
-                  ("count", "sum", "total", "average", "min", "max",
-                   "how many", "top N", "bottom N", "highest", "lowest",
-                   "oldest", "newest", "most", "least", "compare", "rank")
-                  -> mode = "Aggregate",
-                     topK = 8,
-                     namespaces = ["v2-structural","default","v2-large"].
-                  -> searchQuery describes the column and sheet being aggregated,
-                     e.g. "total quantity in Orders".
-        
-        Step 3e — FILTERS.
-        A question may contain ZERO, ONE, or MANY filter conditions.
-        Each filter is a (column, operator, value) triple, optionally
-        with an upperBound for "between".
+                 -> mode = "Exhaustive",
+                    topK = null,
+                    namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}","{{Namespaces.Large}}"],
+                    filterText = the FIRST filter's value,
+                    filters = the full list of filter conditions.
 
-        Trigger this step whenever the question asks to restrict rows
-        by any column value. Examples:
-          "belong to the Vehicles category"
-            -> filters = [{"column":"Category","operator":"=","value":"Vehicles"}]
-          "assets in the Finance department"
-            -> filters = [{"column":"Department","operator":"=","value":"Finance"}]
-          "assets under maintenance"
-            -> filters = [{"column":"Status","operator":"=","value":"Under Maintenance"}]
-          "active assets in Finance"
-            -> filters = [
-                  {"column":"Status","operator":"=","value":"Active"},
-                  {"column":"Department","operator":"=","value":"Finance"}
-               ]
-          "IT Hardware assets in Finance that are Active"
-            -> filters = [
-                  {"column":"Category","operator":"=","value":"IT Hardware"},
-                  {"column":"Department","operator":"=","value":"Finance"},
-                  {"column":"Status","operator":"=","value":"Active"}
-               ]
-          "assets purchased between 2020-01-01 and 2021-12-31"
-            -> filters = [
-                  {"column":"Purchase Date","operator":"between",
-                   "value":"2020-01-01","upperBound":"2021-12-31"}
-               ]
-          "maintenance cost greater than 1000"
-            -> filters = [
-                  {"column":"Cost ($)","operator":">","value":"1000"}
-               ]
-          "employees in HR whose status is not Active"
-            -> filters = [
-                  {"column":"Department","operator":"=","value":"HR"},
-                  {"column":"Status","operator":"!=","value":"Active"}
-               ]
+        Step 3b — PROCEDURE / SEQUENCE / WORKFLOW / PROCESS
+                  ("what are the steps", "how do we deploy", "walk me through",
+                   "what is the procedure for", "what is the sequence",
+                   "what happens during", "how does X work")
+                  -> mode = "Semantic", topK = 10,
+                     namespaces = ["{{Namespaces.Default}}"],
+                     filters = null.
 
-        When any filter is present:
-          -> mode = "Exhaustive"
-             topK = null
-             namespaces = ["v2-structural","default","v2-large"]
-             filterText = the FIRST filter's value (still required by
-                          other rules; set it to the first filter's value)
-             filters = the full list of filter conditions
+        Step 3c — NARROW SUBSET / EXCEPTION / "beyond X" / "additional X" /
+                  "unlike X" / "specifically for X"
+                  These are hard to retrieve with a single embedding — decompose.
+                  -> mode = "Semantic", topK = 12,
+                     namespaces = ["{{Namespaces.Default}}"],
+                     filters = null,
+                     searchQuery MUST contain " | " and 2-3 distinct sub-queries.
 
-        Rules for filters:
-          - Every filter must have column, operator, value — all three
-            non-empty strings.
-          - Use the column name exactly as it appears in the sheet.
-          - For "between", set value = lower bound, upperBound = upper bound.
-          - For "not", "except", "excluding", use operator "!=".
-          - For "contains", "includes", "matching", use "contains".
-          - If the question has no filter condition, set filters = null.
+        Step 3d — AGGREGATION / RANKING / COUNTING
+                  ("how many", "total", "sum", "average", "minimum", "maximum",
+                   "top N", "bottom N", "highest", "lowest", "rank", "most",
+                   "least", "oldest", "newest")
+                  -> mode = "Aggregate", topK = 8,
+                     namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}","{{Namespaces.Large}}"],
+                     filters = null.
 
-        Step 4 — SHAPE of data (columns, fields, tables, data types,
-                 primary key, row count, sheet layout)?
-                 -> mode = "Structural", topK = 10,
-                    namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"].
+        Step 3e — SHAPE / SCHEMA / METADATA
+                  ("what columns", "what fields", "what tables", "what data types",
+                   "primary key", "row count", "sheet layout", "what is the schema")
+                  -> mode = "Structural", topK = 10,
+                     namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"],
+                     filters = null.
 
-        Step 5 — NUMERIC MEASURE (cost, price, amount, revenue, count, rate,
-                 average, total, difference, ratio, industry metric)?
-                 -> mode = "Semantic", topK = 10,
-                    namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"].
+        Step 4 — NUMERIC MEASURE / COMPARISON / TREND
+                  ("cost", "price", "amount", "revenue", "rate", "ratio",
+                   "compare X and Y", "difference between", "trend")
+                  -> mode = "Semantic", topK = 10,
+                     namespaces = ["{{Namespaces.Structural}}","{{Namespaces.Default}}"],
+                     filters = null.
 
-        Step 6 — COMPARE, AGGREGATE, or TREND?
-                 -> mode = "Semantic", topK = 12,
-                    namespaces = ["{{Namespaces.Large}}","{{Namespaces.Structural}}","{{Namespaces.Default}}"].
+        Step 5 — EVERYTHING ELSE — PROSE / POLICY / DEFINITION / "DOES X REQUIRE Y"
+                  Any question about what a document says, what a policy states,
+                  whether something is required, what the rules are, how the
+                  system behaves, what is documented.
+                  -> mode = "Semantic", topK = 15,
+                     namespaces = ["{{Namespaces.Default}}","{{Namespaces.Large}}"],
+                     filters = null.
 
-        Step 7 — anything else (prose, policies, procedures, definitions).
-                 -> mode = "Semantic", topK = 6, namespaces = ["{{Namespaces.Default}}"].
+        ============================================================
+        CRITICAL RULES FOR FILTERS
+        ============================================================
+        A filter is ONLY valid when ALL of these are true:
+          (a) The question asks for rows or records ("list", "which", "how many",
+              "show me", "find", "give me all")
+          (b) The question names a value that must be matched against a specific
+              column that exists in a data table
+          (c) The column name comes from a real schema — you must not invent
+              a column name from words in the question
 
+        DO NOT emit filters when:
+          - The question asks "does X require Y?" or "is X true?" — PROSE
+          - The question asks "what is the policy / procedure / rule for X" — PROSE
+          - The question asks "what does the document say about X" — PROSE
+          - The question asks "how do we do X" — PROCEDURE
+          - The question asks "who approves X" — PROSE
+          - The question asks "what are the N things" — PROSE
+          - You would have to invent a column name to make the filter work —
+            if the column is not already implied by the question, do not filter
+
+        WHEN IN DOUBT: choose mode = "Semantic" with filters = null.
+        A wrong filter returns zero rows and the user gets no answer.
+        A Semantic search returns relevant prose and the user gets an answer.
+        Prefer Semantic over Exhaustive whenever the question is ambiguous.
+
+        ============================================================
         NAMESPACES
-          "{{Namespaces.Default}}"        prose, narrative, policies, procedures, FAQs.
-          "{{Namespaces.Structural}}"  tables, rows, schemas, any row/column data.
-          "{{Namespaces.Large}}"       long reports, cross-document summaries.
-        Always return at least one namespace except for Meta.
+        ============================================================
+          "{{Namespaces.Default}}"        prose, .txt and .docx documents, policies,
+                                        procedures, narratives, FAQs, guides
+          "{{Namespaces.Structural}}"  spreadsheets, rows, columns, schemas,
+                                        any tabular data from .xlsx/.xls/.csv
+          "{{Namespaces.Large}}"       long reports, cross-document summaries
 
+        Every namespace must contain at least one value except for Meta.
+
+        ============================================================
         SEARCHQUERY
-          Copy verbatim unless an obvious typo or acronym needs fixing.
-          Never truncate. Never paraphrase. Never invent.
-          NEVER include a document/guide/spec title in searchQuery.
-          If the question begins with "According to X", "In the Y guide",
-          "From the Z doc", drop that phrase entirely.
-          The searchQuery MUST describe WHAT IS BEING ASKED, not which
-          document to look in.
+        ============================================================
+        - Copy the question verbatim unless an obvious typo or acronym needs fixing.
+        - Never truncate. Never paraphrase. Never invent content.
+        - NEVER include a document / guide / spec / workbook title in searchQuery.
+        - If the question begins with "According to X", "In the Y guide",
+          "From the Z doc", drop that phrase — the searchQuery must describe
+          WHAT is being asked, not which document to look in.
 
-          WHEN TO DECOMPOSE (Step 3c):
-          If the question contains "beyond", "additional", "extra",
-          "specifically for", "only for", "unlike", "different from",
-          OR asks for a subset of items that differ from a baseline,
-          you MUST decompose searchQuery into 2-3 alternative phrasings
-          joined by " | ". Each sub-query must be a complete standalone
-          phrase (not a fragment). Example:
-            "what additional verification for Production deployments |
-             Production-specific deployment checks beyond the standard checklist |
-             extra Production deployment requirements"
+        WHEN TO DECOMPOSE (Step 3c):
+        If the question contains "beyond", "additional", "extra",
+        "specifically for", "only for", "unlike", "different from",
+        decompose searchQuery into 2-3 alternative phrasings joined by " | ".
+        Each sub-query must be a complete standalone phrase.
 
+        ============================================================
         FILTERTEXT
-          The literal value being filtered on, exactly as written.
-          Null when no specific value is being filtered.
+        ============================================================
+        The first filter's value, verbatim. Null when no filter is emitted.
+        Do not invent a filterText. Do not copy the whole question.
 
+        ============================================================
         CONFIDENCE
-          0.9+ obvious / 0.6-0.9 minor ambiguity / <0.6 ambiguous.
+        ============================================================
+        0.9+ — obvious / single clear intent
+        0.6–0.9 — minor ambiguity
+        <0.6 — genuinely ambiguous
 
+        ============================================================
         RULES
-          R1. JSON only. No markdown, no prose.
-          R2. Exact key names, exact mode/namespace strings.
-          R3. Exhaustive requires EITHER a non-empty filterText
+        ============================================================
+        R1. Output JSON only. No markdown, no prose, no explanation.
+        R2. Exact key names. Exact enum strings for mode and namespace.
+        R3. Exhaustive requires EITHER a non-empty filterText
             OR a non-empty filters list.
-          R4. Meta requires namespaces = [] and topK = null.
-          R5. Semantic and Structural require numeric topK.
-          R6. Never empty namespaces for non-Meta.
-          R7. Never invent a filterText.
-          R8. NEVER put a document title in searchQuery.
-          R9. For Step 3c questions, searchQuery MUST contain " | ".
+        R4. Meta requires namespaces = [] and topK = null.
+        R5. Semantic and Structural require numeric topK.
+        R6. Never empty namespaces for non-Meta modes.
+        R7. Never invent a filterText.
+        R8. NEVER put a document title in searchQuery.
+        R9. For Step 3c questions, searchQuery MUST contain " | ".
+        R10. Filters only when the question is explicitly about rows in a table.
+             When in doubt, prefer Semantic with filters = null.
 
         SUB-QUESTION:
         {{subQuestion}}
         """;
 
+    /// <summary>
+    /// Turns raw filter JSON into QueryFilter objects, dropping invalid entries.
+    /// </summary>
     private static List<QueryFilter>? ConvertFilters(List<FilterJson>? raw)
     {
         if (raw is null) return null;
@@ -624,9 +662,7 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
         var result = new List<QueryFilter>();
         foreach (var f in raw)
         {
-            if (string.IsNullOrWhiteSpace(f.Column) ||
-                string.IsNullOrWhiteSpace(f.Operator) ||
-                string.IsNullOrWhiteSpace(f.Value))
+            if (string.IsNullOrWhiteSpace(f.Column) || string.IsNullOrWhiteSpace(f.Operator) || string.IsNullOrWhiteSpace(f.Value))
                 continue;
 
             result.Add(new QueryFilter(
@@ -638,4 +674,6 @@ public sealed class OllamaRetrievalPlanner : IRetrievalPlanner
 
         return result.Count == 0 ? null : result;
     }
+
+    #endregion
 }
