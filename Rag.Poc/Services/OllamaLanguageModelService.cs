@@ -74,8 +74,13 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                      - Include every supported record and preserve its date, type, cost, and other associated values.
                      - Do not treat missing records in one chunk as proof that no records exist in the remaining context.
                      - If no relevant records are present in the context, respond exactly: "Not found in the provided documentation."
-
-
+                15. Preserve the exact wording from the source documents:
+                    - Use the same wording, terminology, labels, and phrases as written in the source documents.
+                    - Do not rewrite, paraphrase, summarize, or rephrase the source content.
+                    - When combining multiple relevant chunks, retain the original wording of each relevant statement.
+                    - Make only the minimum formatting changes needed to present the answer clearly, without changing the original meaning or wording.
+                16. Answer every part of the question using relevant evidence from the retrieved context. Do not replace specific technical details with general information.
+                17. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
          
              CONTEXT:
              <context>
@@ -96,7 +101,7 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             options = new
             {
                 temperature = 0,
-                num_predict = 256
+                num_predict = 512   
             }
         };
 

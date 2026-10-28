@@ -37,11 +37,13 @@ public sealed class DocumentSearchService
     /// <summary>
     /// Searches for documents based on the provided query.
     /// </summary>
-    /// <param name="query"></param>
-    /// <param name="topK"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    public async Task<List<DocumentChunk>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default)
+    /// <param name="query">The search query.</param>
+    /// <param name="topK">The maximum number of results to return.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A list of document chunks that match the query.</returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    private async Task<List<DocumentChunk>> SearchSingleAsync(string query, int topK, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query))
             throw new ArgumentException("Query cannot be empty.", nameof(query));
@@ -59,20 +61,10 @@ public sealed class DocumentSearchService
                 .AsNoTracking()
                 .Include(x => x.Document)
                 .Where(x =>
-                    (x.Document != null &&
-                     (
-                         x.Document.FileName.ToLower().Contains(identifier) ||
-                         (x.Document.RelativePath != null &&
-                          x.Document.RelativePath.ToLower().Contains(identifier))
-                     )) ||
-                    x.Content.ToLower().Contains(identifier) ||
-                    (x.SectionTitle != null &&
-                     x.SectionTitle.ToLower().Contains(identifier)) ||
-                    (x.MetadataJson != null &&
-                     x.MetadataJson.ToLower().Contains(identifier)))
-                .OrderByDescending<DocumentChunk, bool>(x =>
-                    x.Document != null &&
-                    x.Document.FileName.ToLower().Contains(identifier))
+                    (x.Document != null && (x.Document.FileName.ToLower().Contains(identifier) || (x.Document.RelativePath != null
+                    && x.Document.RelativePath.ToLower().Contains(identifier)))) || x.Content.ToLower().Contains(identifier) || (x.SectionTitle != null
+                    && x.SectionTitle.ToLower().Contains(identifier)) || (x.MetadataJson != null && x.MetadataJson.ToLower().Contains(identifier)))
+                .OrderByDescending<DocumentChunk, bool>(x => x.Document != null && x.Document.FileName.ToLower().Contains(identifier))
                 .ThenBy(x => x.ChunkIndex)
                 .Take(topK)
                 .ToListAsync(cancellationToken);
@@ -81,38 +73,11 @@ public sealed class DocumentSearchService
                 return exactMatches;
         }
 
-
-        var allTerms = TokenRegex.Matches(query)
+        var searchTerms = TokenRegex.Matches(query)
             .Select(m => m.Value.ToLowerInvariant())
+            .Where(t => t.Length > 2 && !StopWords.Contains(t))
             .Distinct()
             .ToArray();
-
-        var terms = allTerms
-            .Where(t => t.Length > 2 && !StopWords.Contains(t))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        if (Regex.IsMatch(query, @"\b(performance|target|targets|response\s*times?|latency|benchmark|sla)\b", RegexOptions.IgnoreCase))
-        {
-            terms.UnionWith(new[]
-            {
-                "performance",
-                "response",
-                "time",
-                "login",
-                "asset",
-                "search",
-                "dashboard",
-                "report",
-                "generation",
-                "seconds",
-                "milliseconds"
-            });
-        }
-
-        terms.RemoveWhere(t => t.Length <= 2 || StopWords.Contains(t));
-
-        var searchTerms = terms.ToArray();
-
 
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
 
@@ -145,16 +110,13 @@ public sealed class DocumentSearchService
 
             keywordResults = keywordResults
                 .OrderByDescending(x =>
-                    ScoreKeywordMatch(x, query, searchTerms) +
-                    ScoreAttributeEvidenceMatch(query, x))
+                    ScoreKeywordMatch(x, query, searchTerms))
                 .ThenBy(x => x.ChunkIndex)
                 .Take(candidateCount)
                 .ToList();
         }
 
-
         var versionMatch = Regex.Match(query, @"\b(?:v(?:ersion)?\s*)?(\d+(?:\.\d+)+)\b", RegexOptions.IgnoreCase);
-
         var versionResults = new List<DocumentChunk>();
 
         if (versionMatch.Success)
@@ -193,15 +155,7 @@ public sealed class DocumentSearchService
         }
 
         foreach (var pair in chunks)
-        {
             scores[pair.Key] += ScoreEvidenceMatch(query, pair.Value) * 0.0001;
-            scores[pair.Key] += ScoreAttributeEvidenceMatch(query, pair.Value) * 0.001;
-        }
-
-        var exactStatusMatches = GetExactStatusTableMatches(query, chunks.Values);
-
-        if (exactStatusMatches.Count > 0)
-            return exactStatusMatches;
 
         var rankedChunks = chunks
             .OrderByDescending(x => scores[x.Key])
@@ -209,50 +163,19 @@ public sealed class DocumentSearchService
             .Select(x => x.Value)
             .ToList();
 
-        var isPerformanceQuestion = Regex.IsMatch(query, @"\b(performance|target|targets|response\s*times?|latency|benchmark|sla)\b", RegexOptions.IgnoreCase);
+        var keywordEvidence = keywordResults
+            .OrderByDescending(x => ScoreEvidenceMatch(query, x))
+            .ThenByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
+            .Take(topK)
+            .ToList();
 
-        if (isPerformanceQuestion)
-        {
-            var performanceChunks = rankedChunks
-                .Where(x =>
-                    x.Document?.FileName.Contains(
-                        "AMS-Architecture",
-                        StringComparison.OrdinalIgnoreCase) == true &&
-                    (
-                        (x.SectionTitle?.Contains(
-                            "Performance",
-                            StringComparison.OrdinalIgnoreCase) == true) ||
-                        Regex.IsMatch(
-                            x.Content,
-                            @"Target performance|Login:\s*<|Asset search:|Dashboard:\s*<|Report generation:\s*<",
-                            RegexOptions.IgnoreCase)
-                    ))
-                .ToList();
+        var finalCandidates = rankedChunks
+            .Concat(keywordEvidence)
+            .GroupBy(x => $"{x.DocumentId}:{x.ChunkIndex}")
+            .Select(x => x.First())
+            .ToList();
 
-            if (performanceChunks.Count > 0)
-                rankedChunks = performanceChunks;
-        }
-
-        if (isPerformanceQuestion)
-            return rankedChunks;
-
-        var isRoleQuestion = Regex.IsMatch(query, @"\b(role|assigned|designation|team)\b", RegexOptions.IgnoreCase);
-        var isStatusQuestion = Regex.IsMatch(query, @"\b(status|state|approval|approved|pending)\b", RegexOptions.IgnoreCase);
-
-        if (isRoleQuestion ^ isStatusQuestion)
-        {
-            var exactAttributeMatches = chunks
-                .Where(x => ScoreAttributeEvidenceMatch(query, x.Value) >= 1000)
-                .OrderByDescending(x => scores[x.Key])
-                .Take(topK)
-                .Select(x => x.Value)
-                .ToList();
-
-            if (exactAttributeMatches.Count > 0)
-                return exactAttributeMatches;
-        }
-
-        return await ExpandWithNeighborsAsync(rankedChunks, query, cancellationToken);
+        return await ExpandWithNeighborsAsync(finalCandidates, query, cancellationToken);
     }
 
     /// <summary>
@@ -272,9 +195,7 @@ public sealed class DocumentSearchService
             .Select(x => x.First())
             .ToList();
 
-        var addedKeys = result
-            .Select(x => $"{x.DocumentId}:{x.ChunkIndex}")
-            .ToHashSet();
+        var addedKeys = result.Select(x => $"{x.DocumentId}:{x.ChunkIndex}").ToHashSet();
 
         foreach (var group in rankedChunks.GroupBy(x => x.DocumentId))
         {
@@ -322,6 +243,90 @@ public sealed class DocumentSearchService
         return result;
     }
 
+    /// <summary>
+    /// Searches for documents based on the provided query.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="topK"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentException"></exception>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+
+    public async Task<List<DocumentChunk>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new ArgumentException("Query cannot be empty.", nameof(query));
+
+        if (topK <= 0)
+            throw new ArgumentOutOfRangeException(nameof(topK));
+
+        var queries = SplitIntoSearchQueries(query);
+        var results = new List<DocumentChunk>();
+        var seen = new HashSet<string>();
+        var bestQueryScores = new Dictionary<string, int>();
+
+        foreach (var searchQuery in queries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var chunks = await SearchSingleAsync(searchQuery, topK, cancellationToken);
+
+            foreach (var chunk in chunks)
+            {
+                var key = $"{chunk.DocumentId}:{chunk.ChunkIndex}";
+                var score = ScoreEvidenceMatch(searchQuery, chunk);
+
+                if (!bestQueryScores.TryGetValue(key, out var currentScore) || score > currentScore)
+                    bestQueryScores[key] = score;
+
+                if (seen.Add(key))
+                    results.Add(chunk);
+            }
+        }
+
+        var maxResults = Math.Min(20, Math.Max(topK, topK * queries.Count));
+
+        return results
+            .OrderByDescending(x =>
+                bestQueryScores.GetValueOrDefault(
+                    $"{x.DocumentId}:{x.ChunkIndex}"))
+            .ThenByDescending(x => ScoreEvidenceMatch(query, x))
+            .Take(maxResults)
+            .ToList();
+    }
+
+
+    /// <summary>
+    /// Splits a search query into multiple sub-queries based on delimiters and logical operators.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <returns></returns>
+    private static List<string> SplitIntoSearchQueries(string query)
+    {
+        var queries = new List<string> { query.Trim() };
+
+        var clauses = Regex.Split(query, @"[,;?]+|\band\s+(?=(?:what|which|who|where|when|why|how)\b)|\b(?:also|additionally)\b", RegexOptions.IgnoreCase);
+
+        foreach (var clause in clauses)
+        {
+            var candidate = clause.Trim();
+
+            var meaningfulTerms = TokenRegex.Matches(candidate)
+                .Select(x => x.Value)
+                .Where(x => x.Length > 2 && !StopWords.Contains(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+
+            if (meaningfulTerms < 2)
+                continue;
+
+            if (!queries.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                queries.Add(candidate);
+        }
+
+        return queries;
+    }
 
     #region Private Helper Methods
 
@@ -334,7 +339,7 @@ public sealed class DocumentSearchService
     {
         var parameter = Expression.Parameter(typeof(DocumentChunk), "x");
         var matchCount = BuildKeywordMatchCountExpression(parameter, terms);
-        var minimumMatches = Math.Min(2, terms.Length);
+        var minimumMatches = 1;
 
         return Expression.Lambda<Func<DocumentChunk, bool>>(Expression.GreaterThanOrEqual(matchCount, Expression.Constant(minimumMatches)), parameter);
     }
