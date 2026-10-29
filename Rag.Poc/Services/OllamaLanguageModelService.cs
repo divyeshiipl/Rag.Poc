@@ -48,18 +48,19 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                  
              Rules:
                 1. Answer using only factual evidence in the CONTEXT.
-                2. Read all context sections and identify the source most directly relevant to the question.
+                2. Identify the source and context that most directly answer the specific question. Do not prefer a source merely because it appears first.
                 3. Prefer explicit statements and table mappings over assumptions or general descriptions.
                 4. Preserve table headers, category-to-value relationships, and exact source terminology.
                 5. For a technology stack question, return the technologies and categories explicitly listed in the relevant technology stack table.
                 6. For a specific architecture layer, return only technologies explicitly associated with that layer.
                 7. Never infer technologies, frameworks, programming languages, cloud platforms, or numerical values.
-                8. Combine relevant chunks when necessary to answer the question completely, but exclude unrelated information.
+                8. Combine relevant chunks when necessary to answer completely. For questions about a specific API, feature, document, or process, prefer evidence explicitly describing that subject over similar examples from unrelated APIs or documents.
                 9. If the context does not support the requested answer, respond exactly: "Not found in the provided documentation."
                 10. Keep the answer concise and directly address the question.
-                11. Do not combine facts from unrelated sections merely because they share keywords.
-                12. Preserve the source document's explicit labels and their associated values.
-                13. For questions asking to list multiple items, stages, requirements, features, or durations:
+                11. Do not combine facts from unrelated sections merely because they share keywords. When multiple documents contain similar examples, distinguish them using their source document, API name, field names, and surrounding explanation.
+                12. When multiple documents contain relevant evidence for a general question, compare all relevant examples before answering. State the common behavior supported by the documents and clearly distinguish API-specific fields, messages, and examples by their source. Do not present an example from one API as if it applies to every API.
+                13. Preserve the source document's explicit labels and their associated values.
+                14. For questions asking to list multiple items, stages, requirements, features, or durations:
                     - Include all relevant items explicitly supported by the provided context.
                     - Review all relevant context before answering; do not stop after finding only a partial answer.
                     - Preserve each item's original label and its associated value.
@@ -68,19 +69,19 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                     - Include all requested categories, such as performance limits and capacity limits, when supported by the context.
                     - Do not invent, assume, or infer missing items or values.
                     - If only partial information is available, provide the supported items and clearly state that the remaining information was not found.
-                14. For questions about the history, records, or transactions of a specific entity:
+                15. For questions about the history, records, or transactions of a specific entity:
                      - Identify the exact entity using its name, ID, or identifier.
                      - Retrieve and combine all relevant records associated with that entity from the provided context.
                      - Include every supported record and preserve its date, type, cost, and other associated values.
                      - Do not treat missing records in one chunk as proof that no records exist in the remaining context.
                      - If no relevant records are present in the context, respond exactly: "Not found in the provided documentation."
-                15. Preserve the exact wording from the source documents:
+                16. Preserve the exact wording from the source documents:
                     - Use the same wording, terminology, labels, and phrases as written in the source documents.
                     - Do not rewrite, paraphrase, summarize, or rephrase the source content.
                     - When combining multiple relevant chunks, retain the original wording of each relevant statement.
                     - Make only the minimum formatting changes needed to present the answer clearly, without changing the original meaning or wording.
-                16. Answer every part of the question using relevant evidence from the retrieved context. Do not replace specific technical details with general information.
-                17. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
+                17. Answer every part of the question using the most directly relevant evidence. For questions asking how errors, responses, or data structures are returned, prefer the complete response example and its accompanying explanation over a generic description or a similar example from another API. Do not substitute a specific example from another document when the context contains a more directly relevant example.
+                18. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
          
              CONTEXT:
              <context>

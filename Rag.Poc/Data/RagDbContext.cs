@@ -1,13 +1,11 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Rag.Poc.Models;
+﻿namespace Rag.Poc.Data;
 
-namespace Rag.Poc.Data;
-
+/// <summary>
+/// Represents the Entity Framework DbContext for the RAG application.
+/// </summary>
 public class RagDbContext : DbContext
 {
-    public RagDbContext(
-        DbContextOptions<RagDbContext> options)
-        : base(options)
+    public RagDbContext(DbContextOptions<RagDbContext> options) : base(options)
     {
     }
 
@@ -17,10 +15,8 @@ public class RagDbContext : DbContext
 
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
 
-    protected override void OnModelCreating(
-        ModelBuilder modelBuilder)
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        //modelBuilder.HasPostgresExtension("vector");
 
         modelBuilder.Entity<Project>()
             .HasKey(x => x.Id);

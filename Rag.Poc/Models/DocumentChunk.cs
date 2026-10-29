@@ -1,7 +1,8 @@
-﻿using Pgvector;
+﻿namespace Rag.Poc.Models;
 
-namespace Rag.Poc.Models;
-
+/// <summary>
+/// Represents a chunk of text from a document.
+/// </summary>
 public class DocumentChunk
 {
     public Guid Id { get; set; }

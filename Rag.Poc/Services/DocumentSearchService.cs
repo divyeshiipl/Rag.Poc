@@ -22,16 +22,19 @@ public sealed class DocumentSearchService
 
     private readonly RagDbContext _db;
     private readonly IEmbeddingService _embeddingService;
+    private readonly ILogger<DocumentSearchService> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DocumentSearchService"/> class.
     /// </summary>
     /// <param name="db"></param>
     /// <param name="embeddingService"></param>
-    public DocumentSearchService(RagDbContext db, IEmbeddingService embeddingService)
+    /// <param name="logger"></param>
+    public DocumentSearchService(RagDbContext db, IEmbeddingService embeddingService, ILogger<DocumentSearchService> logger)
     {
         _db = db;
         _embeddingService = embeddingService;
+        _logger = logger;
     }
 
     /// <summary>
@@ -73,11 +76,8 @@ public sealed class DocumentSearchService
                 return exactMatches;
         }
 
-        var searchTerms = TokenRegex.Matches(query)
-            .Select(m => m.Value.ToLowerInvariant())
-            .Where(t => t.Length > 2 && !StopWords.Contains(t))
-            .Distinct()
-            .ToArray();
+        var searchTerms = GetQueryTerms(query);
+        var keywordFilterTerms = searchTerms.Where(term => term.Length > 2).ToArray();
 
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
 
@@ -94,10 +94,10 @@ public sealed class DocumentSearchService
 
         var keywordResults = new List<DocumentChunk>();
 
-        if (searchTerms.Length > 0)
+        if (keywordFilterTerms.Length > 0)
         {
-            var predicate = BuildKeywordPredicate(searchTerms);
-            var matchCount = BuildKeywordMatchCount(searchTerms);
+            var predicate = BuildKeywordPredicate(keywordFilterTerms);
+            var matchCount = BuildKeywordMatchCount(keywordFilterTerms);
 
             keywordResults = await _db.DocumentChunks
                 .AsNoTracking()
@@ -252,7 +252,6 @@ public sealed class DocumentSearchService
     /// <returns></returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="ArgumentOutOfRangeException"></exception>
-
     public async Task<List<DocumentChunk>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -272,6 +271,14 @@ public sealed class DocumentSearchService
 
             var chunks = await SearchSingleAsync(searchQuery, topK, cancellationToken);
 
+            _logger.LogInformation(
+                "RAG Search Query: {SearchQuery}; Results: {Results}",
+                searchQuery,
+                string.Join(" || ", chunks.Select(x =>
+                    $"{x.Document?.FileName} | Chunk: {x.ChunkIndex} | " +
+                    $"EvidenceScore: {ScoreEvidenceMatch(searchQuery, x)} | " +
+                    $"Content: {x.Content}")));
+
             foreach (var chunk in chunks)
             {
                 var key = $"{chunk.DocumentId}:{chunk.ChunkIndex}";
@@ -285,17 +292,40 @@ public sealed class DocumentSearchService
             }
         }
 
+
         var maxResults = Math.Min(20, Math.Max(topK, topK * queries.Count));
+
+        var documentScores = results
+            .GroupBy(x => x.DocumentId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(x => bestQueryScores.GetValueOrDefault(
+                        $"{x.DocumentId}:{x.ChunkIndex}"))
+                    .OrderByDescending(score => score)
+                    .Take(3)
+                    .Sum());
+
+        var bestDocumentScore = documentScores.Values.DefaultIfEmpty(0).Max();
 
         return results
             .OrderByDescending(x =>
-                bestQueryScores.GetValueOrDefault(
-                    $"{x.DocumentId}:{x.ChunkIndex}"))
+            {
+                var key = $"{x.DocumentId}:{x.ChunkIndex}";
+                var evidenceScore = bestQueryScores.GetValueOrDefault(key);
+                var documentScore = documentScores.GetValueOrDefault(x.DocumentId);
+
+                var documentBoost = documentScore == bestDocumentScore
+                    ? 10
+                    : 0;
+
+                return evidenceScore + documentBoost;
+            })
             .ThenByDescending(x => ScoreEvidenceMatch(query, x))
             .Take(maxResults)
             .ToList();
-    }
 
+    }
 
     /// <summary>
     /// Splits a search query into multiple sub-queries based on delimiters and logical operators.
@@ -329,6 +359,26 @@ public sealed class DocumentSearchService
     }
 
     #region Private Helper Methods
+
+    /// <summary>
+    /// Gets the terms from a search query.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <returns></returns>
+    private static string[] GetQueryTerms(string query)
+    {
+        return TokenRegex.Matches(query)
+            .SelectMany(match => match.Value.Split(
+                new[] { '-', '/', '.' },
+                StringSplitOptions.RemoveEmptyEntries))
+            .Where(term =>
+                !StopWords.Contains(term) &&
+                (term.Length > 2 ||
+                 Regex.IsMatch(term, @"^[A-Z]{2,}$")))
+            .Select(term => term.ToLowerInvariant())
+            .Distinct()
+            .ToArray();
+    }
 
     /// <summary>
     /// Builds a predicate for filtering document chunks based on keyword matches.
@@ -427,6 +477,40 @@ public sealed class DocumentSearchService
     }
 
     /// <summary>
+    /// Scores the completeness of an answer based on its relevance to the query.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static int ScoreAnswerCompleteness(string query, string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return 0;
+
+        var score = 0;
+        var isValidationQuery = Regex.IsMatch(query, @"\b(validation|invalid|errors?|error messages?)\b", RegexOptions.IgnoreCase);
+
+        if (isValidationQuery)
+        {
+            if (Regex.IsMatch(content, @"""errors""\s*:", RegexOptions.IgnoreCase))
+                score += 8;
+
+            if (Regex.IsMatch(content, @"""isValid""\s*:\s*false", RegexOptions.IgnoreCase))
+                score += 5;
+
+            if (Regex.IsMatch(content, @"""value""\s*:\s*null", RegexOptions.IgnoreCase))
+                score += 3;
+
+            var errorEntries = Regex.Matches(content, @"""name""\s*:\s*""[^""]+""\s*,\s*""value""\s*:", RegexOptions.IgnoreCase).Count;
+
+            score += Math.Min(errorEntries, 5) * 4;
+        }
+
+        return score;
+    }
+
+
+    /// <summary>
     /// Scores the match between a query and a document chunk.
     /// </summary>
     /// <param name="query"></param>
@@ -434,11 +518,7 @@ public sealed class DocumentSearchService
     /// <returns></returns>
     private static int ScoreEvidenceMatch(string query, DocumentChunk chunk)
     {
-        var queryTerms = TokenRegex.Matches(query)
-            .Select(x => x.Value.ToLowerInvariant())
-            .Where(x => x.Length > 2 && !StopWords.Contains(x))
-            .Distinct()
-            .ToArray();
+        var queryTerms = GetQueryTerms(query);
 
         if (queryTerms.Length == 0)
             return 0;
@@ -488,6 +568,8 @@ public sealed class DocumentSearchService
             if (lineMatches >= 2)
                 score += lineMatches * 3;
         }
+
+        score += ScoreAnswerCompleteness(query, content);
 
         return score;
     }
