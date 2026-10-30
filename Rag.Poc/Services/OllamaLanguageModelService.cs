@@ -37,7 +37,9 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         if (chunks == null || chunks.Count == 0)
             return "The available documents do not provide enough information to answer the question.";
 
-        var context = BuildContext(chunks);
+        var contextChunks = FilterContextForQuestion(question, chunks);
+        
+        var context = BuildContext(contextChunks);
 
         _logger.LogInformation("RAG retrieved context for question: {Question}\n{Context}", question, context);
 
@@ -76,10 +78,11 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                      - Do not treat missing records in one chunk as proof that no records exist in the remaining context.
                      - If no relevant records are present in the context, respond exactly: "Not found in the provided documentation."
                 16. Preserve the exact wording from the source documents:
-                    - Use the same wording, terminology, labels, and phrases as written in the source documents.
-                    - Do not rewrite, paraphrase, summarize, or rephrase the source content.
-                    - When combining multiple relevant chunks, retain the original wording of each relevant statement.
-                    - Make only the minimum formatting changes needed to present the answer clearly, without changing the original meaning or wording.
+                    - Use the same terminology, field names, labels, and technical phrases as written in the source documents.
+                    - Do not change the technical meaning of the source content.
+                    - When combining multiple relevant chunks, retain the original wording of important statements.
+                    - Minor grammatical adjustments and formatting changes are allowed to make the answer understandable.
+                    - Do not introduce unsupported explanations, assumptions, or values.
                 17. Answer every part of the question using the most directly relevant evidence. For questions asking how errors, responses, or data structures are returned, prefer the complete response example and its accompanying explanation over a generic description or a similar example from another API. Do not substitute a specific example from another document when the context contains a more directly relevant example.
                 18. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
          
@@ -102,7 +105,7 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             options = new
             {
                 temperature = 0,
-                num_predict = 512   
+                num_predict = 512
             }
         };
 
@@ -173,6 +176,39 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Filters the context chunks based on the question.
+    /// </summary>
+    /// <param name="question"></param>
+    /// <param name="chunks"></param>
+    /// <returns></returns>
+    private static List<DocumentChunk> FilterContextForQuestion(string question, IReadOnlyList<DocumentChunk> chunks)
+    {
+        var isDefinitionQuestion = Regex.IsMatch(question,
+            @"\b(define|definition|meaning|what is|what does|how is .* identified|which values|allowed values|valid values|field requirements|conditional requirements)\b",
+            RegexOptions.IgnoreCase);
+
+        if (!isDefinitionQuestion)
+            return chunks.ToList();
+
+        return chunks.Where(x => !IsSampleJsonContent(x.Content)).ToList();
+    }
+
+    /// <summary>
+    /// Determines if the content appears to be sample JSON.
+    /// </summary>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static bool IsSampleJsonContent(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return false;
+
+        var jsonPropertyCount = Regex.Matches(content, @"""[A-Za-z][A-Za-z0-9_]*""\s*:").Count;
+
+        return jsonPropertyCount >= 3;
     }
 
     #endregion

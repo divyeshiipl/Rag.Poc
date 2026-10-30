@@ -50,12 +50,8 @@ public sealed class RagAnswerService
 
         foreach (var chunk in chunks)
         {
-            _logger.LogInformation(
-                "Retrieved chunk: DocumentId={DocumentId}, ChunkIndex={ChunkIndex}, SectionTitle={SectionTitle}, Content={Content}",
-                chunk.DocumentId,
-                chunk.ChunkIndex,
-                chunk.SectionTitle,
-                chunk.Content);
+            _logger.LogInformation("Retrieved chunk: DocumentId={DocumentId}, ChunkIndex={ChunkIndex}, SectionTitle={SectionTitle}, Content={Content}",
+                chunk.DocumentId, chunk.ChunkIndex, chunk.SectionTitle, chunk.Content);
         }
 
         if (chunks.Count == 0)

@@ -5,7 +5,7 @@
 /// </summary>
 public sealed class DocumentSearchService
 {
-    private static readonly Regex IdentifierRegex = new(@"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex IdentifierRegex = new(@"\b(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+\b", RegexOptions.Compiled);
     private static readonly Regex TokenRegex = new(@"[\p{L}\p{N}]+(?:[._/-][\p{L}\p{N}]+)*", RegexOptions.Compiled);
     private static readonly HashSet<string> StopWords = new(
         new[]
@@ -166,7 +166,7 @@ public sealed class DocumentSearchService
         var keywordEvidence = keywordResults
             .OrderByDescending(x => ScoreEvidenceMatch(query, x))
             .ThenByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
-            .Take(topK)
+            .Take(candidateCount)
             .ToList();
 
         var finalCandidates = rankedChunks
@@ -175,7 +175,7 @@ public sealed class DocumentSearchService
             .Select(x => x.First())
             .ToList();
 
-        return await ExpandWithNeighborsAsync(finalCandidates, query, cancellationToken);
+        return finalCandidates;
     }
 
     /// <summary>
@@ -232,7 +232,7 @@ public sealed class DocumentSearchService
                         neighbor.SectionTitle,
                         StringComparison.OrdinalIgnoreCase));
 
-                if (!relevant && !sharesSection)
+                if (!relevant)
                     continue;
 
                 addedKeys.Add(key);
@@ -308,23 +308,17 @@ public sealed class DocumentSearchService
 
         var bestDocumentScore = documentScores.Values.DefaultIfEmpty(0).Max();
 
-        return results
+        var rankedResults = results
             .OrderByDescending(x =>
-            {
-                var key = $"{x.DocumentId}:{x.ChunkIndex}";
-                var evidenceScore = bestQueryScores.GetValueOrDefault(key);
-                var documentScore = documentScores.GetValueOrDefault(x.DocumentId);
-
-                var documentBoost = documentScore == bestDocumentScore
-                    ? 10
-                    : 0;
-
-                return evidenceScore + documentBoost;
-            })
+                bestQueryScores.GetValueOrDefault(
+                    $"{x.DocumentId}:{x.ChunkIndex}"))
+            .ThenByDescending(x =>
+                documentScores.GetValueOrDefault(x.DocumentId))
             .ThenByDescending(x => ScoreEvidenceMatch(query, x))
             .Take(maxResults)
             .ToList();
 
+        return await ExpandWithNeighborsAsync(rankedResults, query, cancellationToken);
     }
 
     /// <summary>
@@ -509,6 +503,19 @@ public sealed class DocumentSearchService
         return score;
     }
 
+    /// <summary>
+    /// Extracts evidence terms from the given text.
+    /// </summary>
+    /// <param name="text"></param>
+    /// <returns></returns>
+    private static HashSet<string> GetEvidenceTerms(string text)
+    {
+        return Regex.Matches(text ?? string.Empty, @"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+")
+            .Select(x => x.Value.ToLowerInvariant())
+            .Where(x => x.Length > 1)
+            .ToHashSet();
+    }
+
 
     /// <summary>
     /// Scores the match between a query and a document chunk.
@@ -541,13 +548,13 @@ public sealed class DocumentSearchService
                 score += 40;
         }
 
-        var sectionTerms = TokenRegex.Matches(section).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
-        var fileTerms = TokenRegex.Matches(fileName).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+        var sectionTerms = GetEvidenceTerms(section);
+        var fileTerms = GetEvidenceTerms(fileName);
 
         score += queryTerms.Count(sectionTerms.Contains) * 5;
         score += queryTerms.Count(fileTerms.Contains) * 4;
 
-        var contentTerms = TokenRegex.Matches(content).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+        var contentTerms = GetEvidenceTerms(content);
 
         score += queryTerms.Count(contentTerms.Contains) * 2;
 
@@ -562,11 +569,23 @@ public sealed class DocumentSearchService
 
         foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
-            var lineTerms = TokenRegex.Matches(line).Select(x => x.Value.ToLowerInvariant()).ToHashSet();
+            var lineTerms = GetEvidenceTerms(line);
             var lineMatches = queryTerms.Count(lineTerms.Contains);
 
             if (lineMatches >= 2)
                 score += lineMatches * 3;
+        }
+
+        var isGenerationQuestion = Regex.IsMatch(query, @"\b(generate|generated|generation|create|created|creation|calculate|calculated|calculation)\b", RegexOptions.IgnoreCase);
+
+        if (isGenerationQuestion)
+        {
+            var generationTerms = GetEvidenceTerms("generate generated generation create created creation calculate calculated calculation");
+
+            var directGenerationMatches = contentTerms.Count(generationTerms.Contains);
+
+            if (directGenerationMatches > 0)
+                score += directGenerationMatches * 5;
         }
 
         score += ScoreAnswerCompleteness(query, content);
@@ -852,7 +871,7 @@ public sealed class DocumentSearchService
                 score++;
 
             if (fileName.Contains(term, StringComparison.OrdinalIgnoreCase))
-                score += 5;
+                score += 1;
 
             if (relativePath.Contains(term, StringComparison.OrdinalIgnoreCase))
                 score += 2;
