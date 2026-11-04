@@ -158,7 +158,8 @@ public sealed class DocumentSearchService
             scores[pair.Key] += ScoreEvidenceMatch(query, pair.Value) * 0.0001;
 
         var rankedChunks = chunks
-            .OrderByDescending(x => scores[x.Key])
+            .OrderByDescending(x =>
+                scores[x.Key] + ScoreEvidenceMatch(query, x.Value) * 0.001)
             .Take(topK)
             .Select(x => x.Value)
             .ToList();
@@ -173,6 +174,10 @@ public sealed class DocumentSearchService
             .Concat(keywordEvidence)
             .GroupBy(x => $"{x.DocumentId}:{x.ChunkIndex}")
             .Select(x => x.First())
+            .OrderByDescending(x =>
+                scores.GetValueOrDefault($"{x.DocumentId}:{x.ChunkIndex}") +
+                ScoreEvidenceMatch(query, x) * 0.001)
+            .ThenByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
             .ToList();
 
         return finalCandidates;
@@ -263,7 +268,7 @@ public sealed class DocumentSearchService
         var queries = SplitIntoSearchQueries(query);
         var results = new List<DocumentChunk>();
         var seen = new HashSet<string>();
-        var bestQueryScores = new Dictionary<string, int>();
+        var bestQueryScores = new Dictionary<string, double>();
 
         foreach (var searchQuery in queries)
         {
@@ -279,10 +284,12 @@ public sealed class DocumentSearchService
                     $"EvidenceScore: {ScoreEvidenceMatch(searchQuery, x)} | " +
                     $"Content: {x.Content}")));
 
-            foreach (var chunk in chunks)
+            for (var i = 0; i < chunks.Count; i++)
             {
+                var chunk = chunks[i];
                 var key = $"{chunk.DocumentId}:{chunk.ChunkIndex}";
-                var score = ScoreEvidenceMatch(searchQuery, chunk);
+
+                var score = (1.0 / (60 + i + 1)) + ScoreEvidenceMatch(searchQuery, chunk) * 0.001;
 
                 if (!bestQueryScores.TryGetValue(key, out var currentScore) || score > currentScore)
                     bestQueryScores[key] = score;
@@ -302,9 +309,8 @@ public sealed class DocumentSearchService
                 group => group
                     .Select(x => bestQueryScores.GetValueOrDefault(
                         $"{x.DocumentId}:{x.ChunkIndex}"))
-                    .OrderByDescending(score => score)
-                    .Take(3)
-                    .Sum());
+                    .DefaultIfEmpty(0)
+                    .Max());
 
         var bestDocumentScore = documentScores.Values.DefaultIfEmpty(0).Max();
 
@@ -313,8 +319,9 @@ public sealed class DocumentSearchService
                 bestQueryScores.GetValueOrDefault(
                     $"{x.DocumentId}:{x.ChunkIndex}"))
             .ThenByDescending(x =>
+                ScoreEvidenceMatch(query, x))
+            .ThenByDescending(x =>
                 documentScores.GetValueOrDefault(x.DocumentId))
-            .ThenByDescending(x => ScoreEvidenceMatch(query, x))
             .Take(maxResults)
             .ToList();
 
@@ -490,14 +497,14 @@ public sealed class DocumentSearchService
                 score += 8;
 
             if (Regex.IsMatch(content, @"""isValid""\s*:\s*false", RegexOptions.IgnoreCase))
-                score += 5;
+                score += 8;
 
             if (Regex.IsMatch(content, @"""value""\s*:\s*null", RegexOptions.IgnoreCase))
-                score += 3;
+                score += 5;
 
-            var errorEntries = Regex.Matches(content, @"""name""\s*:\s*""[^""]+""\s*,\s*""value""\s*:", RegexOptions.IgnoreCase).Count;
+            var errorEntries = Regex.Matches(content, @"""name""\s*:\s*""[^""]+""\s*,\s*""value""\s*:\s*""[^""]+""", RegexOptions.IgnoreCase).Count;
 
-            score += Math.Min(errorEntries, 5) * 4;
+            score += Math.Min(errorEntries, 5) * 6;
         }
 
         return score;
@@ -510,10 +517,20 @@ public sealed class DocumentSearchService
     /// <returns></returns>
     private static HashSet<string> GetEvidenceTerms(string text)
     {
-        return Regex.Matches(text ?? string.Empty, @"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+")
-            .Select(x => x.Value.ToLowerInvariant())
-            .Where(x => x.Length > 1)
-            .ToHashSet();
+        var terms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Match token in Regex.Matches(text ?? string.Empty, @"[\p{L}\p{N}]+"))
+        {
+            terms.Add(token.Value.ToLowerInvariant());
+
+            foreach (Match part in Regex.Matches(token.Value, @"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+"))
+            {
+                if (part.Value.Length > 1)
+                    terms.Add(part.Value.ToLowerInvariant());
+            }
+        }
+
+        return terms;
     }
 
 
@@ -556,6 +573,17 @@ public sealed class DocumentSearchService
 
         var contentTerms = GetEvidenceTerms(content);
 
+        var compoundTerms = TokenRegex.Matches(query)
+            .Select(x => x.Value)
+            .Where(x => Regex.IsMatch(x, @"[a-z][A-Z]"))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var term in compoundTerms)
+        {
+            if (Regex.IsMatch(content, $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(term)}(?![\p{{L}}\p{{N}}])", RegexOptions.IgnoreCase))
+                score += 30;
+        }
+
         score += queryTerms.Count(contentTerms.Contains) * 2;
 
         var matchedQueryTerms = queryTerms.Count(contentTerms.Contains);
@@ -589,6 +617,7 @@ public sealed class DocumentSearchService
         }
 
         score += ScoreAnswerCompleteness(query, content);
+        score += ScoreOperationEvidenceMatch(query, content);
 
         return score;
     }
@@ -920,6 +949,50 @@ public sealed class DocumentSearchService
 
         score += ScorePhraseMatch(query, content);
         score += ScoreTableRowMatch(query, content);
+
+        return score;
+    }
+
+    /// <summary>
+    /// Scores the match for operation evidence.
+    /// </summary>
+    /// <param name="query"></param>
+    /// <param name="content"></param>
+    /// <returns></returns>
+    private static int ScoreOperationEvidenceMatch(string query, string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return 0;
+
+        var isOperationQuestion = Regex.IsMatch(query,
+            @"\b(generate|generated|generation|create|created|creation|submit|submitted|process|processed|calculate|calculated|calculation|retrieve|retrieved|push|pushes|pushed|pushing|update|updated|delete|deleted)\b", RegexOptions.IgnoreCase);
+
+        if (!isOperationQuestion)
+            return 0;
+
+        var queryTerms = GetEvidenceTerms(query);
+        var contentTerms = GetEvidenceTerms(content);
+
+        var operationTerms = new[]
+        {
+            "generate", "create", "submit", "process",
+            "calculate", "retrieve", "push", "update", "delete"
+        };
+
+        var operationMatch = operationTerms.Any(term => queryTerms.Contains(term) && contentTerms.Contains(term));
+        var matchedTerms = queryTerms.Count(contentTerms.Contains);
+
+        var score = matchedTerms * 5;
+
+        if (operationMatch)
+            score += 30;
+
+        var hasEndpoint = Regex.IsMatch(content, @"https?://|(?:^|\s)/api/", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+        var hasRequest = Regex.IsMatch(content, @"\b(request|request body|request parameters)\b", RegexOptions.IgnoreCase);
+        var hasResponse = Regex.IsMatch(content, @"\b(response|response body|responsecode|responsemessage)\b", RegexOptions.IgnoreCase);
+
+        if (hasEndpoint && hasRequest && hasResponse)
+            score += 50;
 
         return score;
     }

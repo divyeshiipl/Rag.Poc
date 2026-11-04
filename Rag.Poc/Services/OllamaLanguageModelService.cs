@@ -50,7 +50,7 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                  
              Rules:
                 1. Answer using only factual evidence in the CONTEXT.
-                2. Identify the source and context that most directly answer the specific question. Do not prefer a source merely because it appears first.
+                2. Identify the exact operation requested in the question, such as creating, generating, retrieving, updating, or deleting. Prioritize documentation describing that operation. Do not substitute database retrieval queries, related fields, or examples for the actual process or API definition.
                 3. Prefer explicit statements and table mappings over assumptions or general descriptions.
                 4. Preserve table headers, category-to-value relationships, and exact source terminology.
                 5. For a technology stack question, return the technologies and categories explicitly listed in the relevant technology stack table.
@@ -83,9 +83,14 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                     - When combining multiple relevant chunks, retain the original wording of important statements.
                     - Minor grammatical adjustments and formatting changes are allowed to make the answer understandable.
                     - Do not introduce unsupported explanations, assumptions, or values.
-                17. Answer every part of the question using the most directly relevant evidence. For questions asking how errors, responses, or data structures are returned, prefer the complete response example and its accompanying explanation over a generic description or a similar example from another API. Do not substitute a specific example from another document when the context contains a more directly relevant example.
+                    - For questions asking what happens during or after an operation, include all documented input validations, processing steps, status changes, triggered jobs, and API response details. Do not replace these details with a generic summary.
+                17. For questions about an API operation, prioritize the exact API definition for the requested operation. Extract its HTTP method, endpoint, request parameters, response fields, and relevant implementation notes when available. Distinguish creating or generating data from retrieving existing data. Do not use SQL retrieval queries or related API documentation as substitutes for the requested API operation. 
                 18. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
-         
+                19. When the CONTEXT contains an explicit definition, schema, table, or property list matching the requested object or topic, use that evidence to answer the question. Extract all associated properties, data types, mandatory/optional status, and descriptions when available. Do not respond that information is not found when the requested definition is present in the CONTEXT.
+                20. Use exact API response fields, codes, messages, database status values, and background job details from CONTEXT. Never assume HTTP status codes or response fields. Do not replace missing evidence with generic API behavior.
+                21. Never guess or infer missing business rules, notification triggers, or timing from API URLs, dependencies, field names, or related functionality. If CONTEXT does not explicitly document the requested condition, state that it is not specified.
+                22. Use only relevant evidence from the retrieved CONTEXT. Prioritize chunks that directly answer the question, extract information accurately, and keep unrelated information separate. Do not mix facts from different contexts or sources, invent details, or infer unsupported information. Return all relevant information supported by the CONTEXT without omitting important details.
+             
              CONTEXT:
              <context>
              {context}
