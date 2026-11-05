@@ -63,8 +63,8 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                 12. When multiple documents contain relevant evidence for a general question, compare all relevant examples before answering. State the common behavior supported by the documents and clearly distinguish API-specific fields, messages, and examples by their source. Do not present an example from one API as if it applies to every API.
                 13. Preserve the source document's explicit labels and their associated values.
                 14. For questions asking to list multiple items, stages, requirements, features, or durations:
-                    - Include all relevant items explicitly supported by the provided context.
-                    - Review all relevant context before answering; do not stop after finding only a partial answer.
+                    - For questions asking about multiple scripts, database changes, deployment steps, or their outputs, identify all relevant entries across the CONTEXT, even when they appear in different chunks or pages.
+                    - Combine the script names with their corresponding database objects, tables, configuration data, or other documented outputs. Do not treat information in separate chunks as missing when the chunks together provide the complete answer.
                     - Preserve each item's original label and its associated value.
                     - Combine relevant chunks when necessary, without mixing unrelated facts.
                     - Ensure all requested categories are covered using relevant evidence from the CONTEXT, including information from different documents when necessary.
@@ -84,12 +84,19 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
                     - Minor grammatical adjustments and formatting changes are allowed to make the answer understandable.
                     - Do not introduce unsupported explanations, assumptions, or values.
                     - For questions asking what happens during or after an operation, include all documented input validations, processing steps, status changes, triggered jobs, and API response details. Do not replace these details with a generic summary.
-                17. For questions about an API operation, prioritize the exact API definition for the requested operation. Extract its HTTP method, endpoint, request parameters, response fields, and relevant implementation notes when available. Distinguish creating or generating data from retrieving existing data. Do not use SQL retrieval queries or related API documentation as substitutes for the requested API operation. 
+                17. For questions asking about API connectivity, network configuration, infrastructure access, or deployment prerequisites:
+                    - First identify and use the exact section in CONTEXT that documents the requested connectivity or configuration.
+                    - Extract the explicitly documented values, including source IPs, destination IPs, URLs, ports, protocols, and environment details when available.
+                    - Preserve the original labels and their associated values.
+                    - Return the configuration details directly as the answer.
+                    - Do not substitute user stories, QA test scenarios, API functionality, business processes, or general integration descriptions for the requested configuration.
+                    - Do not use words such as "likely", "may", or "probably" when the requested details are explicitly documented.
+                    - Do not infer or invent missing configuration details.
                 18. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
                 19. When the CONTEXT contains an explicit definition, schema, table, or property list matching the requested object or topic, use that evidence to answer the question. Extract all associated properties, data types, mandatory/optional status, and descriptions when available. Do not respond that information is not found when the requested definition is present in the CONTEXT.
                 20. Use exact API response fields, codes, messages, database status values, and background job details from CONTEXT. Never assume HTTP status codes or response fields. Do not replace missing evidence with generic API behavior.
                 21. Never guess or infer missing business rules, notification triggers, or timing from API URLs, dependencies, field names, or related functionality. If CONTEXT does not explicitly document the requested condition, state that it is not specified.
-                22. Use only relevant evidence from the retrieved CONTEXT. Prioritize chunks that directly answer the question, extract information accurately, and keep unrelated information separate. Do not mix facts from different contexts or sources, invent details, or infer unsupported information. Return all relevant information supported by the CONTEXT without omitting important details.
+                22. Use only relevant evidence from the retrieved CONTEXT. Prioritize chunks that directly answer the question and match its requested information type. For configuration questions, prioritize configuration details over functional descriptions, user stories, and test scenarios. For questions about a specific project, system, version, release, or iteration, prioritize matching evidence and exclude unrelated information. Combine all relevant chunks when necessary, preserve their source-specific details, and do not omit important supported information. Do not mix unrelated facts, invent details, or infer unsupported information.
              
              CONTEXT:
              <context>

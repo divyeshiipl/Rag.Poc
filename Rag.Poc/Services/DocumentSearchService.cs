@@ -92,6 +92,14 @@ public sealed class DocumentSearchService
             .Take(candidateCount)
             .ToListAsync(cancellationToken);
 
+        _logger.LogInformation("Semantic Results: {@Results}", semanticResults.Select(x => new
+        {
+            x.Id,
+            x.Document?.FileName,
+            x.ChunkIndex,
+            x.SectionTitle
+        }));
+
         var keywordResults = new List<DocumentChunk>();
 
         if (keywordFilterTerms.Length > 0)
@@ -115,6 +123,14 @@ public sealed class DocumentSearchService
                 .Take(candidateCount)
                 .ToList();
         }
+
+        _logger.LogInformation("Keyword Results: {@Results}", keywordResults.Select(x => new
+        {
+            x.Id,
+            x.Document?.FileName,
+            x.ChunkIndex,
+            x.SectionTitle
+        }));
 
         var versionMatch = Regex.Match(query, @"\b(?:v(?:ersion)?\s*)?(\d+(?:\.\d+)+)\b", RegexOptions.IgnoreCase);
         var versionResults = new List<DocumentChunk>();
@@ -157,28 +173,19 @@ public sealed class DocumentSearchService
         foreach (var pair in chunks)
             scores[pair.Key] += ScoreEvidenceMatch(query, pair.Value) * 0.0001;
 
-        var rankedChunks = chunks
-            .OrderByDescending(x =>
-                scores[x.Key] + ScoreEvidenceMatch(query, x.Value) * 0.001)
-            .Take(topK)
-            .Select(x => x.Value)
-            .ToList();
-
-        var keywordEvidence = keywordResults
-            .OrderByDescending(x => ScoreEvidenceMatch(query, x))
-            .ThenByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
+        var finalCandidates = scores
+            .OrderByDescending(x => x.Value)
             .Take(candidateCount)
+            .Select(x => chunks[x.Key])
             .ToList();
 
-        var finalCandidates = rankedChunks
-            .Concat(keywordEvidence)
-            .GroupBy(x => $"{x.DocumentId}:{x.ChunkIndex}")
-            .Select(x => x.First())
-            .OrderByDescending(x =>
-                scores.GetValueOrDefault($"{x.DocumentId}:{x.ChunkIndex}") +
-                ScoreEvidenceMatch(query, x) * 0.001)
-            .ThenByDescending(x => ScoreKeywordMatch(x, query, searchTerms))
-            .ToList();
+        _logger.LogInformation("Final Search Candidates: {@Results}", finalCandidates.Select(x => new
+        {
+            x.Id,
+            x.Document?.FileName,
+            x.ChunkIndex,
+            x.SectionTitle
+        }));
 
         return finalCandidates;
     }
@@ -291,8 +298,7 @@ public sealed class DocumentSearchService
 
                 var score = (1.0 / (60 + i + 1)) + ScoreEvidenceMatch(searchQuery, chunk) * 0.001;
 
-                if (!bestQueryScores.TryGetValue(key, out var currentScore) || score > currentScore)
-                    bestQueryScores[key] = score;
+                bestQueryScores[key] = bestQueryScores.GetValueOrDefault(key) + score;
 
                 if (seen.Add(key))
                     results.Add(chunk);
@@ -312,18 +318,22 @@ public sealed class DocumentSearchService
                     .DefaultIfEmpty(0)
                     .Max());
 
-        var bestDocumentScore = documentScores.Values.DefaultIfEmpty(0).Max();
-
         var rankedResults = results
             .OrderByDescending(x =>
                 bestQueryScores.GetValueOrDefault(
                     $"{x.DocumentId}:{x.ChunkIndex}"))
             .ThenByDescending(x =>
-                ScoreEvidenceMatch(query, x))
-            .ThenByDescending(x =>
                 documentScores.GetValueOrDefault(x.DocumentId))
             .Take(maxResults)
             .ToList();
+
+        _logger.LogInformation("Final Aggregated Search Results: {@Results}", rankedResults.Select(x => new
+        {
+            x.Document?.FileName,
+            x.ChunkIndex,
+            x.SectionTitle,
+            AggregatedScore = bestQueryScores.GetValueOrDefault($"{x.DocumentId}:{x.ChunkIndex}")
+        }));
 
         return await ExpandWithNeighborsAsync(rankedResults, query, cancellationToken);
     }
