@@ -38,8 +38,10 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
             return "The available documents do not provide enough information to answer the question.";
 
         var contextChunks = FilterContextForQuestion(question, chunks);
-        
+
         var context = BuildContext(contextChunks);
+
+        _logger.LogInformation("Final Ollama Context:\n{Context}", context);
 
         _logger.LogInformation("RAG retrieved context for question: {Question}\n{Context}", question, context);
 
@@ -49,63 +51,45 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
              Answer the QUESTION using only the factual evidence in the CONTEXT.
                  
              Rules:
-                1. Answer using only factual evidence in the CONTEXT.
-                2. Identify the exact operation requested in the question, such as creating, generating, retrieving, updating, or deleting. Prioritize documentation describing that operation. Do not substitute database retrieval queries, related fields, or examples for the actual process or API definition.
-                3. Prefer explicit statements and table mappings over assumptions or general descriptions.
-                4. Preserve table headers, category-to-value relationships, and exact source terminology.
-                5. For a technology stack question, return the technologies and categories explicitly listed in the relevant technology stack table.
-                6. For a specific architecture layer, return only technologies explicitly associated with that layer.
-                7. Never infer technologies, frameworks, programming languages, cloud platforms, or numerical values.
-                8. Combine relevant chunks when necessary to answer completely. For questions about a specific API, feature, document, or process, prefer evidence explicitly describing that subject over similar examples from unrelated APIs or documents.
-                9. If the context does not support the requested answer, respond exactly: "Not found in the provided documentation."
-                10. Keep the answer concise and directly address the question.
-                11. Do not combine facts from unrelated sections merely because they share keywords. When multiple documents contain similar examples, distinguish them using their source document, API name, field names, and surrounding explanation.
-                12. When multiple documents contain relevant evidence for a general question, compare all relevant examples before answering. State the common behavior supported by the documents and clearly distinguish API-specific fields, messages, and examples by their source. Do not present an example from one API as if it applies to every API.
-                13. Preserve the source document's explicit labels and their associated values.
-                14. For questions asking to list multiple items, stages, requirements, features, or durations:
-                    - For questions asking about multiple scripts, database changes, deployment steps, or their outputs, identify all relevant entries across the CONTEXT, even when they appear in different chunks or pages.
-                    - Combine the script names with their corresponding database objects, tables, configuration data, or other documented outputs. Do not treat information in separate chunks as missing when the chunks together provide the complete answer.
-                    - Preserve each item's original label and its associated value.
-                    - Combine relevant chunks when necessary, without mixing unrelated facts.
-                    - Ensure all requested categories are covered using relevant evidence from the CONTEXT, including information from different documents when necessary.
-                    - Include all requested categories, such as performance limits and capacity limits, when supported by the context.
-                    - Do not invent, assume, or infer missing items or values.
-                    - If only partial information is available, provide the supported items and clearly state that the remaining information was not found.
-                15. For questions about the history, records, or transactions of a specific entity:
-                     - Identify the exact entity using its name, ID, or identifier.
-                     - Retrieve and combine all relevant records associated with that entity from the provided context.
-                     - Include every supported record and preserve its date, type, cost, and other associated values.
-                     - Do not treat missing records in one chunk as proof that no records exist in the remaining context.
-                     - If no relevant records are present in the context, respond exactly: "Not found in the provided documentation."
-                16. Preserve the exact wording from the source documents:
-                    - Use the same terminology, field names, labels, and technical phrases as written in the source documents.
-                    - Do not change the technical meaning of the source content.
-                    - When combining multiple relevant chunks, retain the original wording of important statements.
-                    - Minor grammatical adjustments and formatting changes are allowed to make the answer understandable.
-                    - Do not introduce unsupported explanations, assumptions, or values.
-                    - For questions asking what happens during or after an operation, include all documented input validations, processing steps, status changes, triggered jobs, and API response details. Do not replace these details with a generic summary.
-                17. For questions asking about API connectivity, network configuration, infrastructure access, or deployment prerequisites:
-                    - First identify and use the exact section in CONTEXT that documents the requested connectivity or configuration.
-                    - Extract the explicitly documented values, including source IPs, destination IPs, URLs, ports, protocols, and environment details when available.
-                    - Preserve the original labels and their associated values.
-                    - Return the configuration details directly as the answer.
-                    - Do not substitute user stories, QA test scenarios, API functionality, business processes, or general integration descriptions for the requested configuration.
-                    - Do not use words such as "likely", "may", or "probably" when the requested details are explicitly documented.
-                    - Do not infer or invent missing configuration details.
-                18. For cross-reference questions, connect records and release versions only when the retrieved evidence supports the relationship. Do not guess or duplicate relationships.
-                19. When the CONTEXT contains an explicit definition, schema, table, or property list matching the requested object or topic, use that evidence to answer the question. Extract all associated properties, data types, mandatory/optional status, and descriptions when available. Do not respond that information is not found when the requested definition is present in the CONTEXT.
-                20. For questions about API operations and responses:
-                    - Identify the exact API operation requested and its source document.
-                    - Use the HTTP method and mandatory request fields documented for that exact operation.
-                    - Use only response fields, codes, and messages documented for the same API operation.
-                    - If multiple API specifications are present, prioritize the operation whose description, consumer, and provider match the question.
-                    - Do not confuse similarly named APIs from different systems or documents.
-                    - Do not substitute HTTP methods, endpoints, request parameters, or response structures from another API.
-                    - Never invent API URLs, request parameters, response fields, HTTP status codes, or response examples.
-                    - If the requested API details are only partially documented, provide the supported details and clearly identify what is not specified.
-                21. Never guess or infer missing business rules, notification triggers, or timing from API URLs, dependencies, field names, or related functionality. If CONTEXT does not explicitly document the requested condition, state that it is not specified.
-                22. Use only relevant evidence from the retrieved CONTEXT. Prioritize chunks that directly answer the question and match its requested information type. For configuration questions, prioritize configuration details over functional descriptions, user stories, and test scenarios. For questions about a specific project, system, version, release, or iteration, prioritize matching evidence and exclude unrelated information. Combine all relevant chunks when necessary, preserve their source-specific details, and do not omit important supported information. Do not mix unrelated facts, invent details, or infer unsupported information.
-             
+                1. Answer using explicit factual evidence from the relevant context. When the question asks for specific items, names, values, scripts, or identifiers, extract those exact items from the relevant evidence. Do not substitute related procedures, descriptions, or information from unrelated documents. If relevant evidence is available, do not return "Not found in the provided documentation."
+                2. Identify the document, subject, entity, and information requested in the question. When the question specifies or targets a particular source document, prioritize evidence from that document. Do not use unrelated documents to answer the question. When multiple documents are provided, do not combine information from different documents unless the question explicitly requires comparison or cross-document analysis.
+                3. Combine all relevant chunks when necessary to provide a complete answer. Include all explicitly documented information relevant to the question, even when it appears across different chunks, pages, or documents. Do not mix unrelated facts or omit supported details.
+                4. For questions asking to list multiple items, stages, requirements, features, scripts, database changes, outputs, or durations:
+                   - Include all relevant documented entries.
+                   - Preserve each item's original label and associated values.
+                   - Connect related information across chunks when the evidence supports the relationship.
+                   - Cover all requested categories, including performance and capacity limits when documented.
+                   - If information is partially available, provide the supported details and identify what is missing.
+                5. If the CONTEXT does not contain evidence supporting the requested answer, respond exactly: "Not found in the provided documentation." Never claim information is missing when matching evidence is available.
+                6. Keep answers concise and directly address the question. Do not generate sample code unless explicitly requested.
+                7. For questions about a technology stack or architecture:
+                   - Return only technologies explicitly listed in the relevant documentation.
+                   - For a specific architecture layer, include only technologies associated with that layer.
+                   - Never infer technologies, frameworks, programming languages, cloud platforms, or numerical values.
+                8. For questions about processes, jobs, or operations, include all documented inputs, validations, processing steps, status updates, conditional branches, triggered jobs, retry operations, database updates, and API response details relevant to the question. Do not replace documented steps with a generic summary.
+                9. For API-related questions:
+                   - Identify the exact API operation and its source document.
+                   - Follow the documented HTTP method, endpoint, request parameters, mandatory fields, response structure, codes, and messages.
+                   - When multiple API specifications exist, prioritize the operation whose description, consumer, and provider match the question.
+                   - Keep API-specific details separate. Never substitute details from another API or invent undocumented URLs, headers, authentication requirements, parameters, fields, or responses.
+                   - If details are partially documented, provide the supported information and identify what is not specified.
+                10. For questions about API connectivity, network configuration, or deployment requirements, extract the explicitly documented connectivity details, including source IP addresses, destination IP addresses, URLs, ports, protocols, environment details, and connectivity direction. Present these details directly in a structured format. Do not answer with related user stories, business scenarios, API functionality, or assumptions when the question asks for network connectivity. Do not invent missing connectivity details.:
+                    - Prioritize the exact configuration or connectivity section.
+                    - Extract documented source IPs, destination IPs, URLs, ports, protocols, and environment details when available.
+                    - Do not substitute user stories, QA scenarios, API functionality, or general integration descriptions for configuration details.
+                    - Do not infer or invent missing configuration values.
+                11. For questions about the history, records, or transactions of a specific entity:
+                    - Identify the exact entity using its name, ID, or identifier.
+                    - Combine all relevant records associated with that entity.
+                    - Preserve dates, types, costs, and other associated values.
+                    - Do not treat missing records in one chunk as proof that no records exist elsewhere in the CONTEXT.
+                    - If no relevant records are available, respond exactly: "Not found in the provided documentation."
+                12. When the CONTEXT contains an explicit definition, schema, table, or property list matching the requested topic, use it. Include associated properties, data types, mandatory/optional status, and descriptions when available. Do not report information as missing when it is present.
+                13. For cross-reference questions, connect records, entities, and release versions only when retrieved evidence explicitly supports the relationship. Do not guess or duplicate relationships.
+                14. Never infer business rules, notification triggers, or timing from API URLs, dependencies, field names, or related functionality. If the requested condition is not explicitly documented, state that it is not specified.
+                15. When multiple documents contain relevant evidence for a general question, compare the relevant information. State common behavior only when supported by the documents, and distinguish document-specific examples, fields, messages, and requirements.
+                16. If the provided context contains relevant information, answer using that evidence. Do not return "Not found in the provided documentation" when relevant facts are available. For questions about delivered features or iteration changes, combine all relevant feature descriptions, work item IDs, and implementation details across the provided chunks. If only part of the requested information is available, provide that part and clearly identify what is missing.
+
              CONTEXT:
              <context>
              {context}
@@ -206,6 +190,20 @@ public sealed class OllamaLanguageModelService : ILanguageModelService
     /// <returns></returns>
     private static List<DocumentChunk> FilterContextForQuestion(string question, IReadOnlyList<DocumentChunk> chunks)
     {
+        var operationNames = Regex.Matches(question, @"\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+){2,}\b").Cast<Match>().Select(x => x.Value).ToArray();
+
+        if (operationNames.Length > 0)
+        {
+            var operationChunks = chunks
+                .Where(chunk => operationNames.Any(operation =>
+                    chunk.Content.Contains(operation, StringComparison.OrdinalIgnoreCase) ||
+                    (chunk.SectionTitle?.Contains(operation, StringComparison.OrdinalIgnoreCase) ?? false)))
+                .ToList();
+
+            if (operationChunks.Count > 0)
+                return operationChunks;
+        }
+
         var isDefinitionQuestion = Regex.IsMatch(question,
             @"\b(define|definition|meaning|what is|what does|how is .* identified|which values|allowed values|valid values|field requirements|conditional requirements)\b",
             RegexOptions.IgnoreCase);

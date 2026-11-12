@@ -76,7 +76,20 @@ public sealed class DocumentSearchService
                 return exactMatches;
         }
 
-        var searchTerms = GetQueryTerms(query);
+        var searchTerms = GetQueryTerms(query).ToList();
+
+        if (Regex.IsMatch(query, @"\b(status|statuses|state|acknowledgement|acknowledgment)\b", RegexOptions.IgnoreCase))
+        {
+            searchTerms.AddRange(new[]
+            {
+                "processstatus",
+                "cestatus",
+                "responsecode"
+            });
+        }
+
+        searchTerms = searchTerms.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        
         var keywordFilterTerms = searchTerms.Where(term => term.Length > 2).ToArray();
 
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
@@ -118,7 +131,7 @@ public sealed class DocumentSearchService
 
             keywordResults = keywordResults
                 .OrderByDescending(x =>
-                    ScoreKeywordMatch(x, query, searchTerms))
+                    ScoreKeywordMatch(x, query, searchTerms.ToArray()))
                 .ThenBy(x => x.ChunkIndex)
                 .Take(candidateCount)
                 .ToList();
@@ -149,7 +162,7 @@ public sealed class DocumentSearchService
 
             versionResults = versionResults
                 .OrderByDescending(x =>
-                    ScoreKeywordMatch(x, query, searchTerms))
+                    ScoreKeywordMatch(x, query, searchTerms.ToArray()))
                 .ThenBy(x => x.ChunkIndex)
                 .Take(candidateCount)
                 .ToList();
@@ -160,9 +173,9 @@ public sealed class DocumentSearchService
         var scores = new Dictionary<string, double>();
         var chunks = new Dictionary<string, DocumentChunk>();
 
-        AddRankedResults(semanticResults, scores, chunks, rrfConstant, false, query, searchTerms);
-        AddRankedResults(keywordResults, scores, chunks, rrfConstant, true, query, searchTerms);
-        AddRankedResults(versionResults, scores, chunks, rrfConstant, true, query, searchTerms);
+        AddRankedResults(semanticResults, scores, chunks, rrfConstant, false, query, searchTerms.ToArray());
+        AddRankedResults(keywordResults, scores, chunks, rrfConstant, true, query, searchTerms.ToArray());
+        AddRankedResults(versionResults, scores, chunks, rrfConstant, true, query, searchTerms.ToArray());
 
         foreach (var chunk in versionResults)
         {
