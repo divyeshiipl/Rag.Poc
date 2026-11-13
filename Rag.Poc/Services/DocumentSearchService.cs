@@ -89,7 +89,7 @@ public sealed class DocumentSearchService
         }
 
         searchTerms = searchTerms.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        
+
         var keywordFilterTerms = searchTerms.Where(term => term.Length > 2).ToArray();
 
         var embedding = await _embeddingService.GenerateQueryEmbeddingAsync(query, cancellationToken);
@@ -250,14 +250,12 @@ public sealed class DocumentSearchService
 
                 var relevant = ScoreEvidenceMatch(query, neighbor) > 0;
 
-                var sharesSection = group.Any(x =>
-                    !string.IsNullOrWhiteSpace(x.SectionTitle) &&
-                    string.Equals(
-                        x.SectionTitle,
-                        neighbor.SectionTitle,
-                        StringComparison.OrdinalIgnoreCase));
+                var hasMeaningfulSection = !Regex.IsMatch(neighbor.SectionTitle ?? string.Empty, @"^\s*(page|slide)\s+\d+\s*$", RegexOptions.IgnoreCase);
 
-                if (!relevant)
+                var sharesSection = hasMeaningfulSection && group.Any(x => !string.IsNullOrWhiteSpace(x.SectionTitle)
+                    && string.Equals(x.SectionTitle, neighbor.SectionTitle, StringComparison.OrdinalIgnoreCase));
+
+                if (!relevant && !sharesSection)
                     continue;
 
                 addedKeys.Add(key);
@@ -317,7 +315,6 @@ public sealed class DocumentSearchService
                     results.Add(chunk);
             }
         }
-
 
         var maxResults = Math.Min(20, Math.Max(topK, topK * queries.Count));
 
