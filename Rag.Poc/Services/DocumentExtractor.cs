@@ -40,11 +40,15 @@ public class DocumentExtractor
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!File.Exists(filePath))
-        {
             throw new FileNotFoundException("Excel document was not found.", filePath);
-        }
 
-        var sections = await Task.Run(() => ExtractWorkbook(filePath, cancellationToken), cancellationToken);
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+
+        var sections = await Task.Run(
+            () => extension == ".csv"
+                ? ExtractCsv(filePath, cancellationToken)
+                : ExtractWorkbook(filePath, cancellationToken),
+            cancellationToken);
 
         return new ExtractedDocument
         {
@@ -115,11 +119,11 @@ public class DocumentExtractor
                 }
 
                 currentSection = new DocumentSection
-                    {
-                        Heading = line,
-                        Content = string.Empty,
-                        ContentType = "text/plain"
-                    };
+                {
+                    Heading = line,
+                    Content = string.Empty,
+                    ContentType = "text/plain"
+                };
 
                 continue;
             }
@@ -127,11 +131,11 @@ public class DocumentExtractor
             if (currentSection == null)
             {
                 currentSection = new DocumentSection
-                    {
-                        Heading = null,
-                        Content = string.Empty,
-                        ContentType = "text/plain"
-                    };
+                {
+                    Heading = null,
+                    Content = string.Empty,
+                    ContentType = "text/plain"
+                };
             }
 
             AppendLine(currentSection, line);
@@ -259,15 +263,15 @@ public class DocumentExtractor
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var document = WordprocessingDocument.Open(filePath, false);
-        var body = document.MainDocumentPart?.Document.Body;
+        var body = document.MainDocumentPart?.Document?.Body;
 
         if (body == null)
         {
             return Task.FromResult(new ExtractedDocument
-                {
-                    Text = string.Empty,
-                    Sections = []
-                });
+            {
+                Text = string.Empty,
+                Sections = []
+            });
         }
 
         var sections = new List<DocumentSection>();
@@ -298,10 +302,10 @@ public class DocumentExtractor
         var text = string.Join("\n\n", sections.Select(BuildSectionText).Where(x => !string.IsNullOrWhiteSpace(x)));
 
         return Task.FromResult(new ExtractedDocument
-            {
-                Text = text,
-                Sections = sections
-            });
+        {
+            Text = text,
+            Sections = sections
+        });
     }
 
     /// <summary>
@@ -325,12 +329,12 @@ public class DocumentExtractor
             }
 
             currentSection = new DocumentSection
-                {
-                    Heading = text,
-                    Content = string.Empty,
-                    ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    SourceLocation = $"Paragraph:{sections.Count + 1}"
-                };
+            {
+                Heading = text,
+                Content = string.Empty,
+                ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                SourceLocation = $"Paragraph:{sections.Count + 1}"
+            };
 
             currentSection.Metadata["style"] = style ?? string.Empty;
 
@@ -340,11 +344,11 @@ public class DocumentExtractor
         if (currentSection == null)
         {
             currentSection = new DocumentSection
-                {
-                    Heading = null,
-                    Content = string.Empty,
-                    ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                };
+            {
+                Heading = null,
+                Content = string.Empty,
+                ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            };
         }
 
         AppendContent(currentSection, text);
@@ -358,7 +362,7 @@ public class DocumentExtractor
         if (string.IsNullOrWhiteSpace(style))
             return false;
 
-        return style.Equals("Heading1",StringComparison.OrdinalIgnoreCase) ||
+        return style.Equals("Heading1", StringComparison.OrdinalIgnoreCase) ||
             style.Equals("Heading2", StringComparison.OrdinalIgnoreCase) ||
             style.Equals("Heading3", StringComparison.OrdinalIgnoreCase) ||
             style.Equals("Heading4", StringComparison.OrdinalIgnoreCase) ||
@@ -573,6 +577,135 @@ public class DocumentExtractor
             }
         }
         while (reader.NextResult());
+        return sections;
+    }
+
+    /// <summary>
+    /// Extracts a CSV file as schema, aggregates, column, and row-block sections.
+    /// </summary>
+    /// <param name="filePath"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    private static List<DocumentSection> ExtractCsv(string filePath, CancellationToken cancellationToken)
+    {
+        var sections = new List<DocumentSection>();
+
+        using var parser = new TextFieldParser(filePath);
+
+        parser.TextFieldType = FieldType.Delimited;
+        parser.SetDelimiters(",");
+        parser.HasFieldsEnclosedInQuotes = true;
+        parser.TrimWhiteSpace = false;
+
+        var rows = new List<(int Number, List<string> Values)>();
+        var rowNumber = 0;
+
+        while (!parser.EndOfData)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var fields = parser.ReadFields();
+
+            if (fields == null)
+                continue;
+
+            rowNumber++;
+
+            var values = fields
+                .Select(FormatCellValue)
+                .ToList();
+
+            rows.Add((rowNumber, values));
+        }
+
+        if (rows.Count == 0)
+            return sections;
+
+        var tables = SplitIntoTables(rows);
+
+        for (var t = 0; t < tables.Count; t++)
+        {
+            var tableRows = tables[t];
+            if (tableRows.Count == 0)
+                continue;
+
+            var tableName = tables.Count > 1
+                ? $"{Path.GetFileName(filePath)} (Table {t + 1})"
+                : Path.GetFileName(filePath);
+
+            ExtractLeadingHeadingsAsNotes(tableRows, tableName, sections);
+
+            if (tableRows.Count == 0)
+                continue;
+
+            var headerRow = tableRows[0];
+            var headers = BuildHeaders(headerRow.Values);
+            var headerLine = $"Columns: {string.Join(" | ", headers)}";
+
+            sections.Add(new DocumentSection
+            {
+                Heading = $"{tableName} — schema",
+                Content = $"File: {tableName}\n{headerLine}",
+                SourceLocation = $"File: {tableName}",
+                ContentType = "ExcelWorksheet",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["WorksheetName"] = tableName,
+                    ["HeaderRow"] = headerRow.Number.ToString(CultureInfo.InvariantCulture),
+                    ["ColumnCount"] = headers.Count.ToString(CultureInfo.InvariantCulture),
+                    ["RecordType"] = "ExcelWorksheet"
+                }
+            });
+
+            var dataRows = tableRows.Skip(1).ToList();
+
+            if (dataRows.Count == 0)
+                continue;
+
+            sections.Add(BuildAggregateSection(tableName, headers, dataRows));
+
+            foreach (var colSection in BuildColumnIndexSections(tableName, headers, dataRows))
+                sections.Add(colSection);
+
+            const int extractorRowsPerBlock = 5;
+
+            for (var blockStart = 0; blockStart < dataRows.Count; blockStart += extractorRowsPerBlock)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var blockRows = dataRows
+                    .Skip(blockStart)
+                    .Take(extractorRowsPerBlock)
+                    .ToList();
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"File: {tableName}");
+                sb.AppendLine(headerLine);
+
+                foreach (var (excelRowNumber, values) in blockRows)
+                    sb.AppendLine(FormatRowLine(excelRowNumber, headers, values));
+
+                var firstRow = blockRows[0].Number;
+                var lastRow = blockRows[^1].Number;
+
+                sections.Add(new DocumentSection
+                {
+                    Heading = $"{tableName} — rows {firstRow}-{lastRow}",
+                    Content = sb.ToString().TrimEnd(),
+                    SourceLocation = $"File: {tableName}, Rows: {firstRow}-{lastRow}",
+                    ContentType = "ExcelRows",
+                    Metadata = new Dictionary<string, string>
+                    {
+                        ["WorksheetName"] = tableName,
+                        ["FirstRow"] = firstRow.ToString(CultureInfo.InvariantCulture),
+                        ["LastRow"] = lastRow.ToString(CultureInfo.InvariantCulture),
+                        ["RowCount"] = blockRows.Count.ToString(CultureInfo.InvariantCulture),
+                        ["RecordType"] = "ExcelRows"
+                    }
+                });
+            }
+        }
+
         return sections;
     }
 

@@ -14,7 +14,7 @@ public class DocumentDiscoveryService
             return [];
 
         return Directory
-            .EnumerateFiles(projectFolder, "*.*", SearchOption.AllDirectories)
+            .EnumerateFiles(projectFolder, "*.*", System.IO.SearchOption.AllDirectories)
             .Where(f => SupportedExtensions.Contains(Path.GetExtension(f)));
     }
 

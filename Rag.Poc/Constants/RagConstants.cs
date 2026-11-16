@@ -1,7 +1,7 @@
 ﻿public class RagConstants
 {
-    public const string RetriveModel = "qwen2.5:3b-instruct";
-    public const string Model = "qwen2.5:3b-instruct";
+    public const string RetriveModel = "qwen2.5:7b";
+    public const string Model = "llama3.2:latest";
 
     public static readonly string[] AllowedNamespaces = Namespaces.All.ToArray();
 
