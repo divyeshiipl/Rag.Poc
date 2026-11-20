@@ -573,7 +573,6 @@ public sealed class DocumentSearchService
 
         var q = db.DocumentChunks
             .AsNoTracking()
-            .Include(c => c.Document)
             .Where(c => c.MetadataJson != null &&
                         c.MetadataJson.Contains("\"RecordType\":\"ExcelAggregates\""));
 
@@ -639,7 +638,6 @@ public sealed class DocumentSearchService
 
         var q = db.DocumentChunks
             .AsNoTracking()
-            .Include(c => c.Document)
             .Where(c => c.MetadataJson != null &&
                         (c.MetadataJson.Contains("\"RecordType\":\"ExcelRows\"") ||
                          c.MetadataJson.Contains("\"RecordType\":\"ExcelColumn\"")));
